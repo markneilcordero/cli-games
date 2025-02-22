@@ -78,7 +78,3 @@ rl.question("Guess a number between 1 and 10: ", (answer) => {
 
 ## 🤝 Contributing
 Feel free to contribute by adding new games or improving existing ones! Fork the repository, create a new branch, and submit a pull request.
-
----
-Happy coding & gaming! 🎮🔥
-```
