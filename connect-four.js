@@ -8,7 +8,7 @@ const rl = readline.createInterface({
 // Game Constants
 const ROWS = 6;
 const COLUMNS = 7;
-const EMPTY = '.';
+const EMPTY = '⚪';
 const PLAYER_ONE = '🔴';
 const PLAYER_TWO = '🟡'; // AI
 
