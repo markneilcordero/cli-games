@@ -19,7 +19,7 @@ const SHIPS = [
 // Create an empty grid
 function createGrid() {
     return Array(GRID_SIZE).fill().map(() =>
-        Array(GRID_SIZE).fill().map(() => Math.random() > 0.5 ? "🌧️" : "⛈️")
+        Array(GRID_SIZE).fill().map(() => Math.random() > 0.5 ? "🌧️" : "☁️")
     );
 }
 
@@ -49,8 +49,8 @@ function canPlaceShip(grid, row, col, size, direction) {
     if (direction === "V" && row + size > GRID_SIZE) return false;
 
     for (let i = 0; i < size; i++) {
-        if (direction === "H" && (grid[row][col + i] !== "🌧️" && grid[row][col + i] !== "⛈️")) return false;
-        if (direction === "V" && (grid[row + i][col] !== "🌧️" && grid[row + i][col] !== "⛈️")) return false;
+        if (direction === "H" && (grid[row][col + i] !== "🌧️" && grid[row][col + i] !== "☁️")) return false;
+        if (direction === "V" && (grid[row + i][col] !== "🌧️" && grid[row + i][col] !== "☁️")) return false;
     }
     return true;
 }
@@ -62,7 +62,7 @@ function displayGrid(grid, hideShips = false) {
         let line = (i + 1).toString().padStart(2, ' ') + " ";
         row.forEach(cell => {
             if (hideShips && cell === "🚢") {
-                line += (Math.random() > 0.5 ? "🌧️" : "⛈️");
+                line += (Math.random() > 0.5 ? "🌧️" : "☁️");
             } else {
                 line += cell + " ";
             }
@@ -86,7 +86,7 @@ function playerTurn(opponentGrid, callback) {
         if (opponentGrid[row][col] === "🚢") {
             opponentGrid[row][col] = "💥";
             console.log("💥 HIT!");
-        } else if (opponentGrid[row][col] === "🌧️" || opponentGrid[row][col] === "⛈️") {
+        } else if (opponentGrid[row][col] === "🌧️" || opponentGrid[row][col] === "☁️") {
             opponentGrid[row][col] = "🌊";
             console.log("🌊 MISS!");
         } else {
