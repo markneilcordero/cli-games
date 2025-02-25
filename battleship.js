@@ -62,9 +62,9 @@ function displayGrid(grid, hideShips = false) {
         let line = (i + 1).toString().padStart(2, ' ') + " ";
         row.forEach(cell => {
             if (hideShips && cell === "🚢") {
-                line += "⬜"
+                line += "⬜ "
             } else {
-                line += cell.padEnd(2, " ");
+                line += cell + " ";
             }
         });
         console.log(line);
