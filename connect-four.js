@@ -10,7 +10,7 @@ const ROWS = 6;
 const COLUMNS = 7;
 const EMPTY = '.';
 const PLAYER_ONE = '🔴';
-const PLAYER_TWO = '🟡';
+const PLAYER_TWO = '🟡'; // AI
 
 // Game Variables
 let board = [];
@@ -33,7 +33,7 @@ function displayBoard() {
     console.log('-'.repeat(23) + '\n');
 }
 
-// Check if a move is valid (column not full)
+// Check if a move is valid
 function isValidMove(col) {
     return board[0][col] === EMPTY;
 }
@@ -81,6 +81,36 @@ function isBoardFull() {
     return board[0].every(cell => cell !== EMPTY);
 }
 
+// AI Move (Simple AI: Chooses a random valid column)
+function aiMove() {
+    let availableCols = [];
+    for (let col = 0; col < COLUMNS; col++) {
+        if (isValidMove(col)) availableCols.push(col);
+    }
+
+    if (availableCols.length === 0) return; // No valid moves
+
+    let chosenCol = availableCols[Math.floor(Math.random() * availableCols.length)];
+    let row = dropPiece(chosenCol);
+
+    console.log(`🤖 AI chooses column ${chosenCol + 1}`);
+
+    if (checkWin(row, chosenCol)) {
+        displayBoard();
+        console.log("🤖 AI WINS! 🎉");
+        return askReplay();
+    }
+
+    if (isBoardFull()) {
+        displayBoard();
+        console.log("🤝 It's a DRAW! No more moves available.");
+        return askReplay();
+    }
+
+    currentPlayer = PLAYER_ONE; // Switch back to human player
+    playerMove();
+}
+
 // Handle Player Move
 function playerMove() {
     displayBoard();
@@ -117,9 +147,9 @@ function playerMove() {
             return askReplay();
         }
 
-        // Switch player and continue
-        currentPlayer = currentPlayer === PLAYER_ONE ? PLAYER_TWO : PLAYER_ONE;
-        playerMove();
+        // Switch to AI's turn
+        currentPlayer = PLAYER_TWO;
+        setTimeout(aiMove, 1000); // AI takes a second to "think"
     });
 }
 
