@@ -18,7 +18,9 @@ const SHIPS = [
 
 // Create an empty grid
 function createGrid() {
-    return Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill('~'));
+    return Array(GRID_SIZE).fill().map(() =>
+        Array(GRID_SIZE).fill().map(() => Math.random() > 0.5 ? "🌧️" : "⛈️")
+    );
 }
 
 // Random ship placement
@@ -47,8 +49,8 @@ function canPlaceShip(grid, row, col, size, direction) {
     if (direction === "V" && row + size > GRID_SIZE) return false;
 
     for (let i = 0; i < size; i++) {
-        if (direction === "H" && grid[row][col + i] !== '~') return false;
-        if (direction === "V" && grid[row + i][col] !== '~') return false;
+        if (direction === "H" && (grid[row][col + i] !== "🌧️" && grid[row][col + i] !== "⛈️")) return false;
+        if (direction === "V" && (grid[row + i][col] !== "🌧️" && grid[row + i][col] !== "⛈️")) return false;
     }
     return true;
 }
@@ -59,7 +61,11 @@ function displayGrid(grid, hideShips = false) {
     grid.forEach((row, i) => {
         let line = (i + 1).toString().padStart(2, ' ') + " ";
         row.forEach(cell => {
-            line += (hideShips && cell === "🚢") ? "~ " : cell + " ";
+            if (hideShips && cell === "🚢") {
+                line += (Math.random() > 0.5 ? "🌧️" : "⛈️");
+            } else {
+                line += cell + " ";
+            }
         });
         console.log(line);
     });
@@ -71,7 +77,7 @@ function playerTurn(opponentGrid, callback) {
         let col = input.charCodeAt(0) - 65;
         let row = parseInt(input.slice(1)) - 1;
 
-        if (isNaN(row) || col < 0 || col >= GRID_SIZE || row < 0 || row >= GRID_SIZE) {
+        if (!/^[A-J]\d+$/.test(input) || isNaN(row) || col < 0 || col >= GRID_SIZE || row < 0 || row >= GRID_SIZE) {
             console.log("❌ Invalid input! Try again.");
             playerTurn(opponentGrid, callback);
             return;
@@ -80,7 +86,7 @@ function playerTurn(opponentGrid, callback) {
         if (opponentGrid[row][col] === "🚢") {
             opponentGrid[row][col] = "💥";
             console.log("💥 HIT!");
-        } else if (opponentGrid[row][col] === "~") {
+        } else if (opponentGrid[row][col] === "🌧️" || opponentGrid[row][col] === "⛈️") {
             opponentGrid[row][col] = "🌊";
             console.log("🌊 MISS!");
         } else {
@@ -102,7 +108,7 @@ function aiTurn(playerGrid, callback) {
     } while (playerGrid[row][col] === "💥" || playerGrid[row][col] === "🌊");
 
     console.log(`🤖 AI attacks ${String.fromCharCode(65 + col)}${row + 1}...`);
-    
+
     if (playerGrid[row][col] === "🚢") {
         playerGrid[row][col] = "💥";
         console.log("💥 AI HIT your ship!");
@@ -113,6 +119,7 @@ function aiTurn(playerGrid, callback) {
 
     setTimeout(callback, 1000);
 }
+
 
 // Check if all ships are sunk
 function checkWin(grid) {
