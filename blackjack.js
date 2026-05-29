@@ -1,46 +1,152 @@
 const readline = require("readline");
+const { randomInt } = require("crypto");
 
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
 });
 
-const suits = ["♠️", "♥️", "♦️", "♣️"];
-const ranks = [
-  "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"
-];
-let deck = [];
-let balance = 500;
+// ─────────────────────────────────────────────
+// Game Rules
+// - Single fresh 52-card deck per hand
+// - Blackjack pays 3:2
+// - Dealer stands on all 17s, including soft 17
+// - Insurance costs half the original bet and pays 2:1 profit
+// - Double down is available on the player's first two cards
+// ─────────────────────────────────────────────
+const STARTING_BALANCE = 500;
+const MIN_BET = 5;
 
-// 🃏 Create and Shuffle Deck
-function createDeck() {
-  deck = [];
-  for (let suit of suits) {
-    for (let rank of ranks) {
+const SUITS = ["♠", "♥", "♦", "♣"];
+const RANKS = [
+  "A",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "J",
+  "Q",
+  "K",
+];
+
+const session = {
+  balance: STARTING_BALANCE,
+  handNumber: 1,
+  wins: 0,
+  losses: 0,
+  pushes: 0,
+  blackjacks: 0,
+};
+
+// ─────────────────────────────────────────────
+// CLI Helpers
+// ─────────────────────────────────────────────
+function ask(question) {
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => resolve(answer.trim()));
+  });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function clearScreen() {
+  process.stdout.write("\x1Bc");
+}
+
+function isExitInput(input) {
+  return ["q", "quit", "e", "exit"].includes(input.toLowerCase());
+}
+
+function parseBet(input) {
+  if (!/^\d+(\.\d{1,2})?$/.test(input.trim())) {
+    return null;
+  }
+
+  const amount = Number(input);
+
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function money(amount) {
+  return `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function signedMoney(amount) {
+  if (amount > 0) {
+    return `+${money(amount)}`;
+  }
+
+  if (amount < 0) {
+    return `-${money(Math.abs(amount))}`;
+  }
+
+  return money(0);
+}
+
+function cardText(card) {
+  return `[${card.rank}${card.suit}]`;
+}
+
+function handText(hand) {
+  return hand.map(cardText).join(" ");
+}
+
+// ─────────────────────────────────────────────
+// Deck and Hand Logic
+// ─────────────────────────────────────────────
+function createShuffledDeck() {
+  const deck = [];
+
+  for (const suit of SUITS) {
+    for (const rank of RANKS) {
       deck.push({ rank, suit });
     }
   }
-  deck.sort(() => Math.random() - 0.5);
+
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const randomIndex = randomInt(0, index + 1);
+
+    [deck[index], deck[randomIndex]] = [
+      deck[randomIndex],
+      deck[index],
+    ];
+  }
+
+  return deck;
 }
 
-// 🎲 Draw a Card
-function drawCard() {
-  return deck.pop();
+function drawCard(round) {
+  const card = round.deck.pop();
+
+  if (!card) {
+    throw new Error("The deck is empty.");
+  }
+
+  return card;
 }
 
-// 🎯 Calculate Hand Total
-function calculateHand(hand) {
+function handValue(hand) {
   let total = 0;
   let aces = 0;
 
-  for (let card of hand) {
+  for (const card of hand) {
     if (card.rank === "A") {
       total += 11;
       aces += 1;
     } else if (["J", "Q", "K"].includes(card.rank)) {
       total += 10;
     } else {
-      total += parseInt(card.rank);
+      total += Number(card.rank);
     }
   }
 
@@ -49,177 +155,617 @@ function calculateHand(hand) {
     aces -= 1;
   }
 
-  return total;
+  return {
+    total,
+    soft: aces > 0,
+    blackjack: hand.length === 2 && total === 21,
+    bust: total > 21,
+  };
 }
 
-// 🎮 Game Loop
-function startGame() {
-  createDeck();
-  console.log("=====================================================");
-  console.log("🃏 WELCOME TO CLI BLACKJACK! 🎰");
-  console.log("=====================================================");
-  console.log(`Starting Balance: $${balance}`);
-  placeBet();
+function isTenValue(card) {
+  return ["10", "J", "Q", "K"].includes(card.rank);
 }
 
-// 💰 Place a Bet
-function placeBet() {
-  rl.question(`Your Balance: $${balance}\nEnter your bet amount: `, (bet) => {
-    bet = parseInt(bet);
+function createRound(originalBet) {
+  const round = {
+    deck: createShuffledDeck(),
+    playerHand: [],
+    dealerHand: [],
+    originalBet,
+    wager: originalBet,
+    insurance: 0,
+    insuranceMessage: "",
+    dealerRevealed: false,
+    settled: false,
+    status: "Cards dealt. Choose your move.",
+  };
 
-    if (isNaN(bet) || bet <= 0 || bet > balance) {
-      console.log("Invalid bet! Enter a valid amount.");
-      placeBet();
-    } else {
-      playRound(bet);
-    }
-  });
+  round.playerHand.push(drawCard(round));
+  round.dealerHand.push(drawCard(round));
+  round.playerHand.push(drawCard(round));
+  round.dealerHand.push(drawCard(round));
+
+  return round;
 }
 
-// 🎲 Play One Round
-function playRound(bet) {
-  let playerHand = [drawCard(), drawCard()];
-  let dealerHand = [drawCard(), drawCard()];
-  let playerTotal = calculateHand(playerHand);
-  let dealerTotal = calculateHand(dealerHand);
-  let insuranceBet = 0;
-  let isPlayerDone = false;
+// ─────────────────────────────────────────────
+// Screen Rendering
+// ─────────────────────────────────────────────
+function statsLine() {
+  return (
+    `Wins ${session.wins} | Losses ${session.losses} | ` +
+    `Pushes ${session.pushes} | Blackjacks ${session.blackjacks}`
+  );
+}
 
-  console.log(`\n🃏 Your Hand: ${displayHand(playerHand)} --> Total: ${playerTotal}`);
-  console.log(`🤵 Dealer’s Up Card: [${dealerHand[0].rank}${dealerHand[0].suit}]`);
+function renderLobby(message = "Place a bet to start a hand.") {
+  clearScreen();
 
-  // 🔹 Offer Insurance if Dealer Has an Ace
-  if (dealerHand[0].rank === "A") {
-    rl.question("Dealer has an Ace. Take Insurance? (Y/N): ", (insurance) => {
-      if (insurance.toLowerCase() === "y") {
-        insuranceBet = Math.min(bet / 2, balance);
-        console.log(`Insurance Bet Placed: $${insuranceBet}`);
-      }
-      checkBlackjack(playerHand, dealerHand, bet, insuranceBet);
-    });
+  console.log("══════════════════════════════════════════════════");
+  console.log("                 🃏 CLI BLACKJACK 🃏");
+  console.log("══════════════════════════════════════════════════");
+  console.log(
+    ` Balance: ${money(session.balance)}     Hand: ${session.handNumber}`
+  );
+  console.log(` ${statsLine()}`);
+  console.log("──────────────────────────────────────────────────");
+  console.log(" Rules: Blackjack pays 3:2 | Dealer stands on 17");
+  console.log("        Insurance pays 2:1 | Fresh deck each hand");
+  console.log("──────────────────────────────────────────────────");
+  console.log(` ${message}`);
+  console.log(" Type EXIT to quit.");
+  console.log("══════════════════════════════════════════════════");
+}
+
+function dealerDisplay(round) {
+  if (round.dealerRevealed) {
+    const fullValue = handValue(round.dealerHand);
+
+    return (
+      `${handText(round.dealerHand)}  Total: ${fullValue.total}` +
+      `${fullValue.soft ? " (soft)" : ""}`
+    );
+  }
+
+  const visibleHand = [round.dealerHand[0]];
+  const visibleValue = handValue(visibleHand);
+
+  return (
+    `${cardText(round.dealerHand[0])} [??]  ` +
+    `Visible Total: ${visibleValue.total}` +
+    `${visibleValue.soft ? " (soft)" : ""}`
+  );
+}
+
+function renderRound(round, message = round.status) {
+  clearScreen();
+
+  const playerValue = handValue(round.playerHand);
+
+  console.log("══════════════════════════════════════════════════");
+  console.log("                 🃏 CLI BLACKJACK 🃏");
+  console.log("══════════════════════════════════════════════════");
+  console.log(
+    ` Hand: ${session.handNumber}     Available Cash: ${money(
+      session.balance
+    )}`
+  );
+  console.log(
+    ` Wager: ${money(round.wager)}` +
+      `${
+        round.insurance > 0
+          ? `     Insurance: ${money(round.insurance)}`
+          : ""
+      }`
+  );
+  console.log(` ${statsLine()}`);
+  console.log("──────────────────────────────────────────────────");
+  console.log(` Dealer: ${dealerDisplay(round)}`);
+  console.log("");
+  console.log(
+    ` You:    ${handText(round.playerHand)}  Total: ${playerValue.total}` +
+      `${playerValue.soft ? " (soft)" : ""}`
+  );
+  console.log("──────────────────────────────────────────────────");
+
+  for (const line of String(message).split("\n")) {
+    console.log(` ${line}`);
+  }
+
+  if (round.insuranceMessage) {
+    console.log(` ${round.insuranceMessage}`);
+  }
+
+  console.log("══════════════════════════════════════════════════");
+}
+
+function renderGoodbye() {
+  clearScreen();
+
+  const net = session.balance - STARTING_BALANCE;
+
+  console.log("══════════════════════════════════════════════════");
+  console.log("                    GAME OVER");
+  console.log("══════════════════════════════════════════════════");
+  console.log(` Final Balance: ${money(session.balance)}`);
+  console.log(` Net Result:    ${signedMoney(net)}`);
+  console.log(` ${statsLine()}`);
+  console.log(" Thanks for playing Blackjack!");
+  console.log("══════════════════════════════════════════════════");
+}
+
+// ─────────────────────────────────────────────
+// Settlement Logic
+//
+// Main wager is removed from balance before cards are dealt.
+// - Normal win: returns original stake plus equal profit.
+// - Blackjack: returns original stake plus 3:2 profit.
+// - Push: returns the original stake.
+// - Loss: returns nothing.
+//
+// Insurance is removed when purchased.
+// - Dealer Blackjack: returns insurance plus 2:1 profit.
+// - No Dealer Blackjack: returns nothing.
+// ─────────────────────────────────────────────
+function settleRound(round, outcome, payout, message) {
+  if (round.settled) {
+    return;
+  }
+
+  round.settled = true;
+  round.dealerRevealed = true;
+
+  session.balance = Number((session.balance + payout).toFixed(2));
+
+  if (outcome === "win") {
+    session.wins += 1;
+  } else if (outcome === "loss") {
+    session.losses += 1;
   } else {
-    checkBlackjack(playerHand, dealerHand, bet, insuranceBet);
+    session.pushes += 1;
   }
 
-  function checkBlackjack(playerHand, dealerHand, bet, insuranceBet) {
-    let playerTotal = calculateHand(playerHand);
-    let dealerTotal = calculateHand(dealerHand);
+  round.status = message;
 
-    if (playerTotal === 21 && dealerTotal !== 21) {
-      console.log("\n🎉 BLACKJACK! You Win!");
-      balance += bet * 1.5;
-      return endRound();
-    } else if (dealerTotal === 21) {
-      console.log(`\nDealer Reveals: ${displayHand(dealerHand)} --> Total: ${dealerTotal}`);
-      if (playerTotal === 21) {
-        console.log("PUSH! It's a tie.");
-      } else {
-        console.log("Dealer has BLACKJACK. You lose.");
-        balance -= bet;
-      }
-      if (insuranceBet > 0) {
-        console.log(`Insurance Payout: $${insuranceBet * 2}`);
-        balance += insuranceBet * 2;
-      }
-      return endRound();
+  renderRound(round);
+}
+
+async function offerInsurance(round) {
+  if (round.dealerHand[0].rank !== "A") {
+    return;
+  }
+
+  const insuranceAmount = Number((round.originalBet / 2).toFixed(2));
+
+  if (session.balance < insuranceAmount) {
+    round.insuranceMessage =
+      `Insurance unavailable: you need ${money(
+        insuranceAmount
+      )} additional cash.`;
+
+    return;
+  }
+
+  while (true) {
+    renderRound(
+      round,
+      `Dealer shows an Ace. Insurance costs ${money(insuranceAmount)}.`
+    );
+
+    const input = (
+      await ask("\nTake insurance? (Y/N): ")
+    ).toLowerCase();
+
+    if (["y", "yes"].includes(input)) {
+      round.insurance = insuranceAmount;
+
+      session.balance = Number(
+        (session.balance - insuranceAmount).toFixed(2)
+      );
+
+      round.insuranceMessage =
+        `Insurance placed: ${money(insuranceAmount)}.`;
+
+      return;
     }
 
-    playerTurn();
-  }
-
-  function playerTurn() {
-    console.log("\nChoose an action: [H] Hit, [S] Stand, [D] Double Down, [Q] Quit");
-    rl.question("> ", (choice) => {
-      choice = choice.toUpperCase();
-
-      if (choice === "H") {
-        let newCard = drawCard();
-        playerHand.push(newCard);
-        let playerTotal = calculateHand(playerHand);
-        console.log(`\nYou draw: [${newCard.rank}${newCard.suit}] --> Total: ${playerTotal}`);
-
-        if (playerTotal > 21) {
-          console.log("❌ BUST! You lose.");
-          balance -= bet;
-          return endRound();
-        } else {
-          playerTurn();
-        }
-      } else if (choice === "S") {
-        isPlayerDone = true;
-        dealerTurn();
-      } else if (choice === "D") {
-        if (bet * 2 > balance) {
-          console.log("Not enough balance to Double Down.");
-          playerTurn();
-        } else {
-          bet *= 2;
-          let newCard = drawCard();
-          playerHand.push(newCard);
-          let playerTotal = calculateHand(playerHand);
-          console.log(`\nYou draw: [${newCard.rank}${newCard.suit}] --> Total: ${playerTotal}`);
-
-          if (playerTotal > 21) {
-            console.log("❌ BUST! You lose.");
-            balance -= bet;
-            return endRound();
-          }
-          isPlayerDone = true;
-          dealerTurn();
-        }
-      } else if (choice === "Q") {
-        console.log("Thanks for playing! 🎰");
-        process.exit();
-      } else {
-        console.log("Invalid choice. Try again.");
-        playerTurn();
-      }
-    });
-  }
-
-  function dealerTurn() {
-    console.log(`\nDealer reveals: ${displayHand(dealerHand)} --> Total: ${calculateHand(dealerHand)}`);
-
-    while (calculateHand(dealerHand) < 17) {
-      let newCard = drawCard();
-      dealerHand.push(newCard);
-      console.log(`Dealer draws: [${newCard.rank}${newCard.suit}]`);
+    if (["n", "no"].includes(input)) {
+      round.insuranceMessage = "Insurance declined.";
+      return;
     }
 
-    let dealerTotal = calculateHand(dealerHand);
-    let playerTotal = calculateHand(playerHand);
+    if (isExitInput(input)) {
+      round.insuranceMessage = "Insurance declined.";
+      return;
+    }
 
-    if (dealerTotal > 21 || playerTotal > dealerTotal) {
-      console.log("\n🏆 YOU WIN!");
-      balance += bet;
-    } else if (dealerTotal === playerTotal) {
-      console.log("\n💠 PUSH! It's a tie.");
+    round.status = "⚠ Enter Y or N for insurance.";
+  }
+}
+
+function resolveInsurance(round, dealerHasBlackjack) {
+  if (round.insurance === 0) {
+    return "";
+  }
+
+  if (dealerHasBlackjack) {
+    const insuranceReturn = Number((round.insurance * 3).toFixed(2));
+
+    session.balance = Number(
+      (session.balance + insuranceReturn).toFixed(2)
+    );
+
+    return `Insurance wins and returns ${money(insuranceReturn)}.`;
+  }
+
+  return `Insurance loses: -${money(round.insurance)}.`;
+}
+
+async function resolveNaturals(round) {
+  const player = handValue(round.playerHand);
+  const dealer = handValue(round.dealerHand);
+
+  const dealerCanPeek =
+    round.dealerHand[0].rank === "A" ||
+    isTenValue(round.dealerHand[0]);
+
+  if (!dealerCanPeek && !player.blackjack) {
+    return false;
+  }
+
+  if (dealer.blackjack) {
+    const insuranceResult = resolveInsurance(round, true);
+
+    if (player.blackjack) {
+      settleRound(
+        round,
+        "push",
+        round.wager,
+        `🤝 Both you and the dealer have Blackjack. Push!` +
+          `${insuranceResult ? `\n${insuranceResult}` : ""}`
+      );
     } else {
-      console.log("\n❌ Dealer Wins! You lose.");
-      balance -= bet;
+      settleRound(
+        round,
+        "loss",
+        0,
+        `💀 Dealer has Blackjack. You lose the main wager.` +
+          `${insuranceResult ? `\n${insuranceResult}` : ""}`
+      );
     }
 
-    endRound();
+    return true;
+  }
+
+  const insuranceResult = resolveInsurance(round, false);
+
+  if (insuranceResult) {
+    round.insuranceMessage = insuranceResult;
+  }
+
+  if (player.blackjack) {
+    session.blackjacks += 1;
+
+    const blackjackReturn = Number((round.wager * 2.5).toFixed(2));
+
+    settleRound(
+      round,
+      "win",
+      blackjackReturn,
+      `🎉 BLACKJACK! Your ${money(
+        round.wager
+      )} wager returns ${money(blackjackReturn)}.`
+    );
+
+    return true;
+  }
+
+  return false;
+}
+
+// ─────────────────────────────────────────────
+// Dealer Turn
+// ─────────────────────────────────────────────
+async function dealerTurn(round) {
+  round.dealerRevealed = true;
+
+  renderRound(round, "Dealer reveals the hidden card.");
+  await wait(500);
+
+  while (handValue(round.dealerHand).total < 17) {
+    const card = drawCard(round);
+
+    round.dealerHand.push(card);
+
+    renderRound(round, `Dealer draws ${cardText(card)}.`);
+    await wait(500);
+  }
+
+  const player = handValue(round.playerHand);
+  const dealer = handValue(round.dealerHand);
+
+  if (dealer.bust) {
+    settleRound(
+      round,
+      "win",
+      round.wager * 2,
+      `🏆 Dealer busts with ${dealer.total}. ` +
+        `You win ${money(round.wager)} profit!`
+    );
+
+    return;
+  }
+
+  if (player.total > dealer.total) {
+    settleRound(
+      round,
+      "win",
+      round.wager * 2,
+      `🏆 You win ${player.total} to ${dealer.total}. ` +
+        `Profit: ${money(round.wager)}.`
+    );
+  } else if (player.total < dealer.total) {
+    settleRound(
+      round,
+      "loss",
+      0,
+      `💀 Dealer wins ${dealer.total} to ${player.total}. ` +
+        `You lose ${money(round.wager)}.`
+    );
+  } else {
+    settleRound(
+      round,
+      "push",
+      round.wager,
+      `🤝 Push at ${player.total}. Your wager is returned.`
+    );
   }
 }
 
-function displayHand(hand) {
-  return hand.map((card) => `[${card.rank}${card.suit}]`).join(" ");
-}
+// ─────────────────────────────────────────────
+// Player Turn
+// ─────────────────────────────────────────────
+async function playerTurn(round) {
+  let firstDecision = true;
 
-function endRound() {
-  console.log(`New Balance: $${balance}`);
-  if (balance <= 0) {
-    console.log("\n💸 You're out of money. GAME OVER.");
-    process.exit();
-  }
-  rl.question("\nPlay again? (Y/N) > ", (answer) => {
-    if (answer.toUpperCase() === "Y") placeBet();
-    else {
-      console.log("Thanks for playing! 🃏");
-      process.exit();
+  while (!round.settled) {
+    const canDouble =
+      firstDecision && session.balance >= round.originalBet;
+
+    const options = canDouble
+      ? "[H] Hit  [S] Stand  [D] Double Down  [Q] Quit"
+      : "[H] Hit  [S] Stand  [Q] Quit";
+
+    renderRound(round, `Your turn. ${options}`);
+
+    const choice = (
+      await ask("\nChoose an action: ")
+    ).toLowerCase();
+
+    if (["h", "hit"].includes(choice)) {
+      const card = drawCard(round);
+
+      round.playerHand.push(card);
+      firstDecision = false;
+
+      const player = handValue(round.playerHand);
+
+      if (player.bust) {
+        settleRound(
+          round,
+          "loss",
+          0,
+          `💥 You drew ${cardText(card)} and busted with ${player.total}. ` +
+            `You lose ${money(round.wager)}.`
+        );
+
+        return;
+      }
+
+      round.status =
+        `You drew ${cardText(card)}. Your total is ${player.total}.`;
+
+      continue;
     }
-  });
+
+    if (["s", "stand"].includes(choice)) {
+      await dealerTurn(round);
+      return;
+    }
+
+    if (["d", "double", "double down"].includes(choice)) {
+      if (!firstDecision) {
+        round.status =
+          "⚠ Double down is only available before you hit.";
+
+        continue;
+      }
+
+      if (!canDouble) {
+        round.status =
+          `⚠ You need ${money(
+            round.originalBet
+          )} additional cash to double down.`;
+
+        continue;
+      }
+
+      session.balance = Number(
+        (session.balance - round.originalBet).toFixed(2)
+      );
+
+      round.wager += round.originalBet;
+
+      const card = drawCard(round);
+
+      round.playerHand.push(card);
+
+      const player = handValue(round.playerHand);
+
+      if (player.bust) {
+        settleRound(
+          round,
+          "loss",
+          0,
+          `💥 You doubled down, drew ${cardText(card)}, ` +
+            `and busted with ${player.total}. ` +
+            `You lose ${money(round.wager)}.`
+        );
+
+        return;
+      }
+
+      round.status =
+        `You doubled down and drew ${cardText(card)}. Dealer now plays.`;
+
+      await dealerTurn(round);
+
+      return;
+    }
+
+    if (isExitInput(choice)) {
+      const confirm = (
+        await ask(
+          `Quit now? Your active wager of ${money(
+            round.wager
+          )} is forfeited. (Y/N): `
+        )
+      ).toLowerCase();
+
+      if (["y", "yes"].includes(confirm)) {
+        session.losses += 1;
+
+        renderGoodbye();
+        rl.close();
+
+        return;
+      }
+
+      round.status = "Game continues. Choose your action.";
+
+      continue;
+    }
+
+    round.status = "⚠ Invalid action. Choose H, S, D, or Q.";
+  }
 }
 
-startGame();
+// ─────────────────────────────────────────────
+// Game Flow
+// ─────────────────────────────────────────────
+async function getBet() {
+  let message = `Minimum bet is ${money(MIN_BET)}.`;
+
+  while (true) {
+    renderLobby(message);
+
+    const input = await ask("\nEnter your bet amount: ");
+
+    if (isExitInput(input)) {
+      return null;
+    }
+
+    const bet = parseBet(input);
+
+    if (
+      bet === null ||
+      bet < MIN_BET ||
+      bet > session.balance
+    ) {
+      message =
+        `⚠ Enter a bet from ${money(MIN_BET)} ` +
+        `to ${money(session.balance)}.`;
+
+      continue;
+    }
+
+    return Number(bet.toFixed(2));
+  }
+}
+
+async function playHand(bet) {
+  session.balance = Number(
+    (session.balance - bet).toFixed(2)
+  );
+
+  const round = createRound(bet);
+
+  await offerInsurance(round);
+
+  const completedByNatural = await resolveNaturals(round);
+
+  if (!completedByNatural) {
+    await playerTurn(round);
+  }
+
+  return round.settled;
+}
+
+async function askPlayAgain() {
+  while (true) {
+    const input = (
+      await ask("\nPlay another hand? (Y/N): ")
+    ).toLowerCase();
+
+    if (["y", "yes"].includes(input)) {
+      session.handNumber += 1;
+      return true;
+    }
+
+    if (["n", "no"].includes(input) || isExitInput(input)) {
+      return false;
+    }
+
+    console.log("Please enter Y or N.");
+  }
+}
+
+async function startGame() {
+  while (session.balance >= MIN_BET) {
+    const bet = await getBet();
+
+    if (bet === null) {
+      renderGoodbye();
+      rl.close();
+
+      return;
+    }
+
+    const finishedNormally = await playHand(bet);
+
+    if (!finishedNormally) {
+      return;
+    }
+
+    if (session.balance < MIN_BET) {
+      renderLobby(
+        `💸 You do not have enough cash for the ${money(
+          MIN_BET
+        )} minimum bet.`
+      );
+
+      await ask("\nPress Enter to finish...");
+
+      break;
+    }
+
+    const continueGame = await askPlayAgain();
+
+    if (!continueGame) {
+      break;
+    }
+  }
+
+  renderGoodbye();
+  rl.close();
+}
+
+// ─────────────────────────────────────────────
+// Start Game
+// ─────────────────────────────────────────────
+startGame().catch((error) => {
+  clearScreen();
+  console.error("An unexpected error occurred:", error.message);
+  rl.close();
+});
