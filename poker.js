@@ -6,21 +6,7 @@ const rl = readline.createInterface({
 });
 
 const SUITS = ["♠", "♥", "♦", "♣"];
-const RANKS = [
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
-  "10",
-  "J",
-  "Q",
-  "K",
-  "A",
-];
+const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
 
 const RANK_VALUE = Object.fromEntries(
   RANKS.map((rank, index) => [rank, index + 2])
@@ -29,110 +15,173 @@ const RANK_VALUE = Object.fromEntries(
 const STARTING_CHIPS = 1000;
 const SMALL_BLIND = 10;
 const BIG_BLIND = 20;
-const MIN_RAISE = 20;
+const BET_SIZE = 20;
 const MAX_RAISES_PER_STREET = 3;
 
-let playerBank = STARTING_CHIPS;
-let aiBank = STARTING_CHIPS;
-let pot = 0;
-let deck = [];
-let handNumber = 0;
+// Increase these values to make AI Watch Mode even slower.
+const AI_THINK_DELAY = 2000;  // Time before each AI action
+const AI_ACTION_DELAY = 1800; // Time to display each AI action
+const AI_STREET_DELAY = 3000; // Pause before dealing the next street
+const AI_HAND_DELAY = 4500;   // Pause before starting the next hand
 
+const game = {
+  mode: "manual",
+  playerBank: STARTING_CHIPS,
+  opponentBank: STARTING_CHIPS,
+  pot: 0,
+  deck: [],
+  handNumber: 0,
+};
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
 function ask(question) {
   return new Promise((resolve) => {
-    rl.question(question, (answer) => resolve(answer.trim().toLowerCase()));
+    rl.question(question, (answer) => {
+      resolve(answer.trim().toLowerCase());
+    });
   });
 }
 
-// Clears previous terminal output before drawing a new game screen.
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function clearScreen() {
-  console.clear();
-  process.stdout.write("\x1B[2J\x1B[0f");
+  process.stdout.write("\x1Bc");
 }
 
-function otherPlayer(player) {
-  return player === "player" ? "ai" : "player";
+function isWatchMode() {
+  return game.mode === "ai";
 }
 
-function playerName(player) {
-  return player === "player" ? "You" : "AI";
+function seatName(seat) {
+  if (seat === "player") {
+    return isWatchMode() ? "Your AI" : "You";
+  }
+
+  return "Opponent AI";
 }
 
-function formatCard(card) {
+function actionVerb(seat, humanVerb, automatedVerb) {
+  return seat === "player" && !isWatchMode()
+    ? humanVerb
+    : automatedVerb;
+}
+
+function otherSeat(seat) {
+  return seat === "player" ? "opponent" : "player";
+}
+
+function getBank(seat) {
+  return seat === "player" ? game.playerBank : game.opponentBank;
+}
+
+function addChips(seat, amount) {
+  if (seat === "player") {
+    game.playerBank += amount;
+  } else {
+    game.opponentBank += amount;
+  }
+}
+
+function removeChips(seat, amount) {
+  if (seat === "player") {
+    game.playerBank -= amount;
+  } else {
+    game.opponentBank -= amount;
+  }
+}
+
+function cardText(card) {
   return `[${card.rank}${card.suit}]`;
 }
 
-function formatCards(cards) {
-  return cards.length ? cards.map(formatCard).join(" ") : "(none)";
+function cardsText(cards) {
+  return cards.length ? cards.map(cardText).join(" ") : "(none)";
 }
 
 function hiddenCards(cards) {
   return cards.map(() => "[??]").join(" ");
 }
 
+// ─────────────────────────────────────────────
+// Table Display
+// ─────────────────────────────────────────────
 function renderTable({
-  phase,
+  street,
   playerHand,
-  aiHand,
+  opponentHand,
   communityCards,
-  button,
+  dealer,
   status = "",
-  revealAi = false,
+  revealOpponent = false,
 }) {
   clearScreen();
 
-  console.log("══════════════════════════════════════════════");
-  console.log("       🎲 CLI TEXAS HOLD'EM POKER");
-  console.log("══════════════════════════════════════════════");
+  console.log("══════════════════════════════════════════════════════");
+  console.log("             🎲 CLI TEXAS HOLD'EM POKER");
+  console.log("══════════════════════════════════════════════════════");
   console.log(
-    ` Hand: ${handNumber}          Dealer: ${
-      button === "player" ? "You" : "AI"
+    ` Hand: ${game.handNumber}     Street: ${street}     Mode: ${
+      isWatchMode() ? "AI WATCH" : "MANUAL"
     }`
   );
-  console.log(` Street: ${phase}`);
-  console.log("──────────────────────────────────────────────");
+  console.log(` Dealer Button: ${seatName(dealer)}`);
+  console.log("──────────────────────────────────────────────────────");
   console.log(
-    ` AI:    ${revealAi ? formatCards(aiHand) : hiddenCards(aiHand)}`
+    ` Opponent AI: ${
+      revealOpponent
+        ? cardsText(opponentHand)
+        : hiddenCards(opponentHand)
+    }`
   );
   console.log("");
-  console.log(` Board: ${formatCards(communityCards)}`);
+  console.log(` Board:       ${cardsText(communityCards)}`);
   console.log("");
-  console.log(` You:   ${formatCards(playerHand)}`);
-  console.log("──────────────────────────────────────────────");
-  console.log(` Pot: ${pot} chips     You: ${playerBank}     AI: ${aiBank}`);
-  console.log("══════════════════════════════════════════════");
+  console.log(` ${seatName("player")}: ${cardsText(playerHand)}`);
+  console.log("──────────────────────────────────────────────────────");
+  console.log(
+    ` Pot: ${game.pot}     ${seatName("player")}: ${game.playerBank}     ` +
+      `Opponent AI: ${game.opponentBank}`
+  );
+  console.log("══════════════════════════════════════════════════════");
 
   if (status) {
     console.log(`\n${status}`);
   }
 }
 
+// ─────────────────────────────────────────────
+// Deck Logic
+// ─────────────────────────────────────────────
 function createShuffledDeck() {
-  const newDeck = [];
+  const deck = [];
 
   for (const suit of SUITS) {
     for (const rank of RANKS) {
-      newDeck.push({ suit, rank });
+      deck.push({ rank, suit });
     }
   }
 
-  for (let index = newDeck.length - 1; index > 0; index -= 1) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
 
-    [newDeck[index], newDeck[randomIndex]] = [
-      newDeck[randomIndex],
-      newDeck[index],
+    [deck[index], deck[swapIndex]] = [
+      deck[swapIndex],
+      deck[index],
     ];
   }
 
-  return newDeck;
+  return deck;
 }
 
 function drawCard() {
-  const card = deck.pop();
+  const card = game.deck.pop();
 
   if (!card) {
-    throw new Error("Deck is empty.");
+    throw new Error("The deck is empty.");
   }
 
   return card;
@@ -142,6 +191,9 @@ function burnCard() {
   drawCard();
 }
 
+// ─────────────────────────────────────────────
+// Poker Hand Evaluation
+// ─────────────────────────────────────────────
 function chooseFive(cards) {
   const hands = [];
 
@@ -166,17 +218,20 @@ function chooseFive(cards) {
   return hands;
 }
 
-function getStraightHigh(values) {
-  const uniqueValues = [...new Set(values)].sort((a, b) => b - a);
+function straightHigh(values) {
+  const valuesToCheck = [...new Set(values)].sort((a, b) => b - a);
 
-  // Ace can play low in A-2-3-4-5.
-  if (uniqueValues.includes(14)) {
-    uniqueValues.push(1);
+  if (valuesToCheck.includes(14)) {
+    valuesToCheck.push(1);
   }
 
-  for (let index = 0; index <= uniqueValues.length - 5; index += 1) {
-    if (uniqueValues[index] - uniqueValues[index + 4] === 4) {
-      return uniqueValues[index];
+  for (
+    let index = 0;
+    index <= valuesToCheck.length - 5;
+    index += 1
+  ) {
+    if (valuesToCheck[index] - valuesToCheck[index + 4] === 4) {
+      return valuesToCheck[index];
     }
   }
 
@@ -194,22 +249,18 @@ function evaluateFive(cards) {
     counts.set(value, (counts.get(value) || 0) + 1);
   }
 
-  const groups = [...counts.entries()].sort((first, second) => {
-    if (second[1] !== first[1]) {
-      return second[1] - first[1];
-    }
-
-    return second[0] - first[0];
+  const groups = [...counts.entries()].sort((a, b) => {
+    return b[1] - a[1] || b[0] - a[0];
   });
 
-  const isFlush = cards.every((card) => card.suit === cards[0].suit);
-  const straightHigh = getStraightHigh(values);
+  const flush = cards.every((card) => card.suit === cards[0].suit);
+  const straight = straightHigh(values);
 
-  if (isFlush && straightHigh) {
+  if (flush && straight) {
     return {
       category: 8,
-      name: straightHigh === 14 ? "Royal Flush" : "Straight Flush",
-      tiebreak: [straightHigh],
+      name: straight === 14 ? "Royal Flush" : "Straight Flush",
+      tiebreak: [straight],
     };
   }
 
@@ -229,7 +280,7 @@ function evaluateFive(cards) {
     };
   }
 
-  if (isFlush) {
+  if (flush) {
     return {
       category: 5,
       name: "Flush",
@@ -237,11 +288,11 @@ function evaluateFive(cards) {
     };
   }
 
-  if (straightHigh) {
+  if (straight) {
     return {
       category: 4,
       name: "Straight",
-      tiebreak: [straightHigh],
+      tiebreak: [straight],
     };
   }
 
@@ -288,7 +339,7 @@ function evaluateFive(cards) {
   };
 }
 
-function compareEvaluations(first, second) {
+function compareHands(first, second) {
   if (first.category !== second.category) {
     return first.category > second.category ? 1 : -1;
   }
@@ -303,56 +354,54 @@ function compareEvaluations(first, second) {
 }
 
 function evaluateBestHand(cards) {
-  const possibleHands = chooseFive(cards);
+  const candidateHands = chooseFive(cards);
+  let best = evaluateFive(candidateHands[0]);
 
-  if (!possibleHands.length) {
-    throw new Error("At least five cards are required to evaluate a hand.");
-  }
+  for (const hand of candidateHands.slice(1)) {
+    const result = evaluateFive(hand);
 
-  let bestHand = evaluateFive(possibleHands[0]);
-
-  for (const hand of possibleHands.slice(1)) {
-    const evaluation = evaluateFive(hand);
-
-    if (compareEvaluations(evaluation, bestHand) > 0) {
-      bestHand = evaluation;
+    if (compareHands(result, best) > 0) {
+      best = result;
     }
   }
 
-  return bestHand;
+  return best;
 }
 
-function commitChips(player, amount, streetContributions, handState) {
-  const bank = player === "player" ? playerBank : aiBank;
+// ─────────────────────────────────────────────
+// Chip and Betting Logic
+// ─────────────────────────────────────────────
+function commitChips(seat, requestedAmount, streetPaid, handState) {
+  const availableBank = getBank(seat);
+  const availableLimit =
+    handState.wagerLimit - handState.committed[seat];
 
-  const remainingHandLimit =
-    handState.wagerLimit - handState.committed[player];
+  const paid = Math.max(
+    0,
+    Math.min(requestedAmount, availableBank, availableLimit)
+  );
 
-  const paid = Math.max(0, Math.min(amount, bank, remainingHandLimit));
+  removeChips(seat, paid);
 
-  if (player === "player") {
-    playerBank -= paid;
-  } else {
-    aiBank -= paid;
-  }
-
-  streetContributions[player] += paid;
-  handState.committed[player] += paid;
-  pot += paid;
+  streetPaid[seat] += paid;
+  handState.committed[seat] += paid;
+  game.pot += paid;
 
   return paid;
 }
 
-function remainingRisk(player, handState) {
-  const bank = player === "player" ? playerBank : aiBank;
-
-  return Math.min(bank, handState.wagerLimit - handState.committed[player]);
+function riskRemaining(seat, handState) {
+  return Math.min(
+    getBank(seat),
+    handState.wagerLimit - handState.committed[seat]
+  );
 }
 
-function postBlind(player, amount, contributions, handState) {
-  return commitChips(player, amount, contributions, handState);
-}
+// ─────────────────────────────────────────────
+// AI Decision Logic - Strategic Poker Play
+// ─────────────────────────────────────────────
 
+// Evaluate preflop hand strength (0-10 scale)
 function preFlopStrength(cards) {
   const first = RANK_VALUE[cards[0].rank];
   const second = RANK_VALUE[cards[1].rank];
@@ -363,78 +412,214 @@ function preFlopStrength(cards) {
   const pair = first === second;
   const suited = cards[0].suit === cards[1].suit;
   const connected = Math.abs(first - second) <= 1;
+  const gapped = Math.abs(first - second) === 2;
 
-  if (pair && high >= 10) return 4;
-  if (pair) return 3;
-  if (high === 14 && low >= 10) return 3;
-  if (high >= 12 && low >= 10) return 2;
-  if (suited && connected && high >= 10) return 2;
-  if (high >= 11 || suited) return 1;
+  // Pocket pairs: premium to marginal
+  if (pair) {
+    if (high >= 12) return 9;  // AA, KK, QQ
+    if (high >= 9) return 8;   // TT, JJ
+    if (high >= 7) return 6;   // 77-99
+    return 4;                  // 22-66
+  }
 
-  return 0;
+  // Big broadway cards
+  if (high === 14) {
+    if (low >= 12) return 9;   // AK
+    if (low >= 10) return 8;   // AQ, AJ
+    if (low >= 9) return 7;    // AT
+    if (suited) return 6;      // A9s, A8s, etc
+    return 3;                  // AX unsuited lower
+  }
+
+  if (high === 13) {
+    if (low >= 12) return 8;   // KQ
+    if (low >= 11) return 7;   // KJ
+    if (low >= 10) return 6;   // KT
+    if (suited && low >= 9) return 5;
+    return 2;
+  }
+
+  // Suited connectors and gapped cards
+  if (suited && connected && high >= 10) return 6;
+  if (suited && connected && high >= 8) return 5;
+  if (suited && gapped && high >= 10) return 4;
+  if (suited && high >= 12) return 5;
+  if (suited && high >= 10) return 4;
+  if (suited) return 2;
+
+  // Unsuited connectors
+  if (connected && high >= 11) return 4;
+  if (connected && high >= 9) return 3;
+
+  // High cards
+  if (high >= 12 && low >= 10) return 5;
+  if (high >= 11 && low >= 10) return 4;
+  if (high >= 11) return 2;
+
+  return 1;  // Junk hands, but not completely hopeless
 }
 
-function decideAiMove(aiHand, communityCards, amountToCall, canRaise, canBet) {
-  const strength =
-    communityCards.length < 3
-      ? preFlopStrength(aiHand)
-      : evaluateBestHand([...aiHand, ...communityCards]).category;
+// Calculate draw strength (flush draw, straight draw, etc)
+function calculateDrawStrength(holeCards, communityCards) {
+  if (communityCards.length < 3) return 0;
 
+  const allCards = [...holeCards, ...communityCards];
+
+  // Count suits for flush draw
+  const suitCounts = { "♠": 0, "♥": 0, "♦": 0, "♣": 0 };
+  for (const card of allCards) {
+    suitCounts[card.suit]++;
+  }
+
+  let flushDrawStrength = 0;
+  for (const count of Object.values(suitCounts)) {
+    if (count === 4) flushDrawStrength = 1;  // Open-ended flush draw
+  }
+
+  // Count for straight draw
+  const values = allCards
+    .map(card => RANK_VALUE[card.rank])
+    .sort((a, b) => b - a);
+
+  let straightDrawStrength = 0;
+  for (let i = 0; i < values.length - 3; i++) {
+    const gap = values[i] - values[i + 3];
+    if (gap === 3) {
+      straightDrawStrength = Math.max(straightDrawStrength, 1);  // Open-ended
+    }
+    if (gap === 4) {
+      straightDrawStrength = Math.max(straightDrawStrength, 0.5);  // Gutshot
+    }
+  }
+
+  return flushDrawStrength + straightDrawStrength;
+}
+
+// Evaluate postflop hand strength
+function postFlopStrength(holeCards, communityCards) {
+  const best = evaluateBestHand([...holeCards, ...communityCards]);
+
+  // Map hand categories to strength (0-10)
+  const categoryStrength = {
+    0: 1,  // High card
+    1: 3,  // One pair
+    2: 5,  // Two pair
+    3: 6,  // Three of a kind
+    4: 7,  // Straight
+    5: 8,  // Flush
+    6: 9,  // Full house
+    7: 9.5, // Four of a kind
+    8: 10  // Straight flush
+  };
+
+  let strength = categoryStrength[best.category] || 0;
+
+  // Add draw strength
+  const drawStrength = calculateDrawStrength(holeCards, communityCards);
+  strength += drawStrength * 1.5;
+
+  return Math.min(strength, 10);
+}
+
+// Decide AI action based on comprehensive poker strategy
+function decideAiMove(
+  holeCards,
+  communityCards,
+  amountToCall,
+  canRaise,
+  canBet
+) {
+  let strength;
+
+  if (communityCards.length < 3) {
+    // Preflop: use preflop strength evaluation
+    strength = preFlopStrength(holeCards);
+  } else {
+    // Postflop: use postflop strength with draws
+    strength = postFlopStrength(holeCards, communityCards);
+  }
+
+  // Aggressive play: raise with strong hands
   if (amountToCall > 0) {
-    if (strength >= 3 && canRaise) {
-      return "raise";
+    if (strength >= 8.5 && canRaise) {
+      return "raise";  // Premium hands
     }
 
-    if (strength >= 1 || amountToCall <= BIG_BLIND) {
-      return "call";
+    if (strength >= 6.5 && canRaise && amountToCall <= BIG_BLIND * 2) {
+      return "raise";  // Good hands, especially with small bet
     }
 
-    return "fold";
+    if (strength >= 5 || (strength >= 3 && amountToCall <= BIG_BLIND)) {
+      return "call";  // Marginal calls
+    }
+
+    if (strength >= 3.5) {
+      return "call";  // Medium strength
+    }
+
+    if (strength >= 2.5 && amountToCall === BIG_BLIND) {
+      return "call";  // Defend against big blind
+    }
+
+    return "fold";  // Weak hands fold
   }
 
-  if (strength >= 2 && canBet) {
-    return "bet";
+  // Position play: bet/check logic
+  if (strength >= 7 && canBet) {
+    return "bet";  // Strong hands bet for value
   }
 
-  return "check";
+  if (strength >= 5 && canBet && communityCards.length <= 4) {
+    return "bet";  // Semi-bluff with decent equity
+  }
+
+  if (strength >= 3.5 && canBet && communityCards.length === 3) {
+    // Aggressive on flop with medium strength
+    return Math.random() > 0.3 ? "bet" : "check";
+  }
+
+  return "check";  // Check with weak hands
 }
 
-async function getPlayerAction(amountToCall, canRaise, canBet) {
+// ─────────────────────────────────────────────
+// Human Input
+// ─────────────────────────────────────────────
+async function getHumanAction(amountToCall, canRaise, canBet) {
   while (true) {
-    let answer;
-
     if (amountToCall > 0) {
       const raiseOption = canRaise ? ", (r)aise" : "";
 
-      answer = await ask(
+      const answer = await ask(
         `\nYour move: (c)all ${amountToCall}${raiseOption}, (f)old > `
       );
 
-      if (["c", "call", "1"].includes(answer)) {
+      if (["c", "call"].includes(answer)) {
         return "call";
       }
 
-      if (canRaise && ["r", "raise", "2"].includes(answer)) {
+      if (canRaise && ["r", "raise"].includes(answer)) {
         return "raise";
       }
 
-      if (["f", "fold", "3"].includes(answer)) {
+      if (["f", "fold"].includes(answer)) {
         return "fold";
       }
     } else {
       const betOption = canBet ? ", (b)et" : "";
 
-      answer = await ask(`\nYour move: (k)check${betOption}, (f)old > `);
+      const answer = await ask(
+        `\nYour move: (k)check${betOption}, (f)old > `
+      );
 
-      if (["k", "check", "1"].includes(answer)) {
+      if (["k", "check"].includes(answer)) {
         return "check";
       }
 
-      if (canBet && ["b", "bet", "2"].includes(answer)) {
+      if (canBet && ["b", "bet"].includes(answer)) {
         return "bet";
       }
 
-      if (["f", "fold", "3"].includes(answer)) {
+      if (["f", "fold"].includes(answer)) {
         return "fold";
       }
     }
@@ -443,69 +628,110 @@ async function getPlayerAction(amountToCall, canRaise, canBet) {
   }
 }
 
-async function pause(message) {
-  await ask(`\n${message} Press Enter to continue...`);
+async function watchDelay(milliseconds) {
+  if (isWatchMode()) {
+    await wait(milliseconds);
+  }
 }
 
+// ─────────────────────────────────────────────
+// Betting Round
+// ─────────────────────────────────────────────
 async function bettingRound({
-  phase,
+  street,
   playerHand,
-  aiHand,
+  opponentHand,
   communityCards,
-  button,
+  dealer,
   handState,
-  openingContributions = null,
-  openingStatus = "",
+  startingPaid = { player: 0, opponent: 0 },
+  startingStatus = "",
 }) {
-  const contributions = openingContributions || { player: 0, ai: 0 };
+  const streetPaid = startingPaid;
 
-  let currentBet = Math.max(contributions.player, contributions.ai);
-  let actor = phase === "Pre-Flop" ? button : otherPlayer(button);
+  let currentBet = Math.max(
+    streetPaid.player,
+    streetPaid.opponent
+  );
+
+  let actor =
+    street === "Pre-Flop"
+      ? dealer
+      : otherSeat(dealer);
+
   let raises = 0;
-  let acted = { player: false, ai: false };
-  let status = openingStatus;
+
+  let acted = {
+    player: false,
+    opponent: false,
+  };
+
+  let status = startingStatus;
 
   while (true) {
-    const amountToCall = currentBet - contributions[actor];
-    const actorRemaining = remainingRisk(actor, handState);
-    const opponentRemaining = remainingRisk(otherPlayer(actor), handState);
+    const amountToCall = currentBet - streetPaid[actor];
 
-    const raiseExtra = Math.min(
-      MIN_RAISE,
-      Math.max(0, actorRemaining - amountToCall),
-      opponentRemaining
+    const actorRisk = riskRemaining(actor, handState);
+    const opponentRisk = riskRemaining(otherSeat(actor), handState);
+
+    const extraRaise = Math.min(
+      BET_SIZE,
+      Math.max(0, actorRisk - amountToCall),
+      opponentRisk
     );
 
     const canRaise =
       amountToCall > 0 &&
       raises < MAX_RAISES_PER_STREET &&
-      raiseExtra > 0;
+      extraRaise > 0;
 
     const canBet =
       amountToCall === 0 &&
       raises < MAX_RAISES_PER_STREET &&
-      Math.min(actorRemaining, opponentRemaining, MIN_RAISE) > 0;
+      Math.min(actorRisk, opponentRisk, BET_SIZE) > 0;
 
     renderTable({
-      phase,
+      street,
       playerHand,
-      aiHand,
+      opponentHand,
       communityCards,
-      button,
+      dealer,
       status,
     });
 
-    if (amountToCall === 0 && actorRemaining === 0) {
+    if (amountToCall === 0 && actorRisk === 0) {
       return { folded: false };
     }
 
     let action;
 
-    if (actor === "player") {
-      action = await getPlayerAction(amountToCall, canRaise, canBet);
+    if (actor === "player" && !isWatchMode()) {
+      action = await getHumanAction(
+        amountToCall,
+        canRaise,
+        canBet
+      );
     } else {
+      status = `${seatName(actor)} is thinking...`;
+
+      renderTable({
+        street,
+        playerHand,
+        opponentHand,
+        communityCards,
+        dealer,
+        status,
+      });
+
+      await wait(AI_THINK_DELAY);
+
+      const actingHand =
+        actor === "player"
+          ? playerHand
+          : opponentHand;
+
       action = decideAiMove(
-        aiHand,
+        actingHand,
         communityCards,
         amountToCall,
         canRaise,
@@ -514,29 +740,26 @@ async function bettingRound({
     }
 
     if (action === "fold") {
-      const winner = otherPlayer(actor);
-      const winningPot = pot;
+      const winner = otherSeat(actor);
+      const wonPot = game.pot;
 
-      if (winner === "player") {
-        playerBank += pot;
-      } else {
-        aiBank += pot;
-      }
+      addChips(winner, wonPot);
+      game.pot = 0;
 
-      pot = 0;
-
-      status = `${playerName(actor)} folded. ${playerName(winner)} ${
-        winner === "player" ? "win" : "wins"
-      } ${winningPot} chips!`;
+      status =
+        `${seatName(actor)} folds. ${seatName(winner)} ` +
+        `${actionVerb(winner, "win", "wins")} ${wonPot} chips!`;
 
       renderTable({
-        phase,
+        street,
         playerHand,
-        aiHand,
+        opponentHand,
         communityCards,
-        button,
+        dealer,
         status,
       });
+
+      await watchDelay(AI_ACTION_DELAY);
 
       return { folded: true };
     }
@@ -544,308 +767,412 @@ async function bettingRound({
     if (action === "check") {
       acted[actor] = true;
 
-      status = `${playerName(actor)} ${
-        actor === "player" ? "check" : "checks"
-      }.`;
-
-      if (
-        acted.player &&
-        acted.ai &&
-        contributions.player === contributions.ai
-      ) {
-        renderTable({
-          phase,
-          playerHand,
-          aiHand,
-          communityCards,
-          button,
-          status,
-        });
-
-        return { folded: false };
-      }
+      status =
+        `${seatName(actor)} ` +
+        `${actionVerb(actor, "check", "checks")}.`;
     }
 
     if (action === "call") {
-      const paid = commitChips(actor, amountToCall, contributions, handState);
+      const paid = commitChips(
+        actor,
+        amountToCall,
+        streetPaid,
+        handState
+      );
 
       acted[actor] = true;
 
-      status = `${playerName(actor)} ${
-        actor === "player" ? "call" : "calls"
-      } ${paid} chips.`;
-
-      if (contributions.player === contributions.ai) {
-        renderTable({
-          phase,
-          playerHand,
-          aiHand,
-          communityCards,
-          button,
-          status,
-        });
-
-        return { folded: false };
-      }
+      status =
+        `${seatName(actor)} ` +
+        `${actionVerb(actor, "call", "calls")} ${paid} chips.`;
     }
 
     if (action === "bet") {
-      const amount = Math.min(
-        MIN_RAISE,
-        actorRemaining,
-        opponentRemaining
+      const paid = commitChips(
+        actor,
+        Math.min(BET_SIZE, actorRisk, opponentRisk),
+        streetPaid,
+        handState
       );
 
-      const paid = commitChips(actor, amount, contributions, handState);
-
-      currentBet = contributions[actor];
+      currentBet = streetPaid[actor];
       raises += 1;
 
-      acted = { player: false, ai: false };
+      acted = {
+        player: false,
+        opponent: false,
+      };
+
       acted[actor] = true;
 
-      status = `${playerName(actor)} ${
-        actor === "player" ? "bet" : "bets"
-      } ${paid} chips.`;
+      status =
+        `${seatName(actor)} ` +
+        `${actionVerb(actor, "bet", "bets")} ${paid} chips.`;
     }
 
     if (action === "raise") {
       const paid = commitChips(
         actor,
-        amountToCall + raiseExtra,
-        contributions,
+        amountToCall + extraRaise,
+        streetPaid,
         handState
       );
 
-      currentBet = contributions[actor];
+      currentBet = streetPaid[actor];
       raises += 1;
 
-      acted = { player: false, ai: false };
+      acted = {
+        player: false,
+        opponent: false,
+      };
+
       acted[actor] = true;
 
-      status = `${playerName(actor)} ${
-        actor === "player" ? "raise" : "raises"
-      } ${paid} chips.`;
+      status =
+        `${seatName(actor)} ` +
+        `${actionVerb(actor, "raise", "raises")} ${paid} chips.`;
     }
 
-    actor = otherPlayer(actor);
+    renderTable({
+      street,
+      playerHand,
+      opponentHand,
+      communityCards,
+      dealer,
+      status,
+    });
+
+    await watchDelay(AI_ACTION_DELAY);
+
+    if (
+      acted.player &&
+      acted.opponent &&
+      streetPaid.player === streetPaid.opponent
+    ) {
+      return { folded: false };
+    }
+
+    actor = otherSeat(actor);
   }
 }
 
+// ─────────────────────────────────────────────
+// Showdown
+// ─────────────────────────────────────────────
 function awardShowdown({
   playerHand,
-  aiHand,
+  opponentHand,
   communityCards,
-  button,
+  dealer,
 }) {
-  const playerResult = evaluateBestHand([...playerHand, ...communityCards]);
-  const aiResult = evaluateBestHand([...aiHand, ...communityCards]);
+  const playerResult = evaluateBestHand([
+    ...playerHand,
+    ...communityCards,
+  ]);
 
-  const comparison = compareEvaluations(playerResult, aiResult);
+  const opponentResult = evaluateBestHand([
+    ...opponentHand,
+    ...communityCards,
+  ]);
+
+  const comparison = compareHands(playerResult, opponentResult);
 
   let status;
 
   if (comparison > 0) {
-    status = `🎉 You win ${pot} chips with ${playerResult.name}!`;
-    playerBank += pot;
-  } else if (comparison < 0) {
-    status = `💀 AI wins ${pot} chips with ${aiResult.name}.`;
-    aiBank += pot;
-  } else {
-    const playerShare =
-      Math.floor(pot / 2) + (button === "player" && pot % 2 ? 1 : 0);
+    const wonPot = game.pot;
 
-    const aiShare = pot - playerShare;
-
-    playerBank += playerShare;
-    aiBank += aiShare;
+    addChips("player", wonPot);
 
     status =
-      `🤝 Tie: ${playerResult.name}. ` +
-      `You receive ${playerShare}; AI receives ${aiShare}.`;
+      `🎉 ${seatName("player")} ` +
+      `${actionVerb("player", "win", "wins")} ` +
+      `${wonPot} chips with ${playerResult.name}!`;
+  } else if (comparison < 0) {
+    const wonPot = game.pot;
+
+    addChips("opponent", wonPot);
+
+    status =
+      `💀 Opponent AI wins ${wonPot} chips ` +
+      `with ${opponentResult.name}.`;
+  } else {
+    const playerShare =
+      Math.floor(game.pot / 2) +
+      (dealer === "player" && game.pot % 2 ? 1 : 0);
+
+    const opponentShare = game.pot - playerShare;
+
+    addChips("player", playerShare);
+    addChips("opponent", opponentShare);
+
+    status =
+      `🤝 Tie: ${playerResult.name}. ${seatName("player")} ` +
+      `receives ${playerShare}; Opponent AI receives ${opponentShare}.`;
   }
 
-  pot = 0;
+  game.pot = 0;
 
   renderTable({
-    phase: "Showdown",
+    street: "Showdown",
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
-    revealAi: true,
+    dealer,
+    revealOpponent: true,
     status:
       `${status}\n\n` +
-      `Your best hand: ${playerResult.name}\n` +
-      `AI best hand:   ${aiResult.name}`,
+      `${seatName("player")} best hand: ${playerResult.name}\n` +
+      `Opponent AI best hand: ${opponentResult.name}`,
   });
 }
 
-async function playHand() {
-  handNumber += 1;
-  pot = 0;
-  deck = createShuffledDeck();
+async function streetPause(message) {
+  if (isWatchMode()) {
+    console.log(`\n${message} Next street coming soon...`);
+    await wait(AI_STREET_DELAY);
+  } else {
+    await ask(`\n${message} Press Enter to continue...`);
+  }
+}
 
-  const button = handNumber % 2 === 1 ? "player" : "ai";
-  const smallBlindPlayer = button;
-  const bigBlindPlayer = otherPlayer(button);
+// ─────────────────────────────────────────────
+// Hand Flow
+// ─────────────────────────────────────────────
+async function playHand() {
+  game.handNumber += 1;
+  game.pot = 0;
+  game.deck = createShuffledDeck();
+
+  const dealer =
+    game.handNumber % 2 === 1
+      ? "player"
+      : "opponent";
+
+  const smallBlindSeat = dealer;
+  const bigBlindSeat = otherSeat(dealer);
 
   const playerHand = [drawCard(), drawCard()];
-  const aiHand = [drawCard(), drawCard()];
+  const opponentHand = [drawCard(), drawCard()];
   const communityCards = [];
 
-  // In heads-up poker, only the smaller bankroll can be won in one hand.
   const handState = {
-    wagerLimit: Math.min(playerBank, aiBank),
+    wagerLimit: Math.min(game.playerBank, game.opponentBank),
     committed: {
       player: 0,
-      ai: 0,
+      opponent: 0,
     },
   };
 
-  const blindContributions = {
+  const blindPaid = {
     player: 0,
-    ai: 0,
+    opponent: 0,
   };
 
-  const smallBlindPaid = postBlind(
-    smallBlindPlayer,
+  const smallBlindPaid = commitChips(
+    smallBlindSeat,
     SMALL_BLIND,
-    blindContributions,
+    blindPaid,
     handState
   );
 
-  const bigBlindPaid = postBlind(
-    bigBlindPlayer,
+  const bigBlindPaid = commitChips(
+    bigBlindSeat,
     BIG_BLIND,
-    blindContributions,
+    blindPaid,
     handState
   );
 
-  let outcome = await bettingRound({
-    phase: "Pre-Flop",
+  let result = await bettingRound({
+    street: "Pre-Flop",
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
+    dealer,
     handState,
-    openingContributions: blindContributions,
-    openingStatus:
-      `${playerName(smallBlindPlayer)} ${
-        smallBlindPlayer === "player" ? "post" : "posts"
-      } small blind (${smallBlindPaid}). ` +
-      `${playerName(bigBlindPlayer)} ${
-        bigBlindPlayer === "player" ? "post" : "posts"
-      } big blind (${bigBlindPaid}).`,
+    startingPaid: blindPaid,
+    startingStatus:
+      `${seatName(smallBlindSeat)} ` +
+      `${actionVerb(smallBlindSeat, "post", "posts")} ` +
+      `small blind (${smallBlindPaid}). ` +
+      `${seatName(bigBlindSeat)} ` +
+      `${actionVerb(bigBlindSeat, "post", "posts")} ` +
+      `big blind (${bigBlindPaid}).`,
   });
 
-  if (outcome.folded) {
+  if (result.folded) {
     return;
   }
 
-  await pause("Pre-flop betting finished.");
+  await streetPause("Pre-flop betting finished.");
 
   burnCard();
   communityCards.push(drawCard(), drawCard(), drawCard());
 
-  outcome = await bettingRound({
-    phase: "Flop",
+  result = await bettingRound({
+    street: "Flop",
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
+    dealer,
     handState,
   });
 
-  if (outcome.folded) {
+  if (result.folded) {
     return;
   }
 
-  await pause("Flop betting finished.");
+  await streetPause("Flop betting finished.");
 
   burnCard();
   communityCards.push(drawCard());
 
-  outcome = await bettingRound({
-    phase: "Turn",
+  result = await bettingRound({
+    street: "Turn",
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
+    dealer,
     handState,
   });
 
-  if (outcome.folded) {
+  if (result.folded) {
     return;
   }
 
-  await pause("Turn betting finished.");
+  await streetPause("Turn betting finished.");
 
   burnCard();
   communityCards.push(drawCard());
 
-  outcome = await bettingRound({
-    phase: "River",
+  result = await bettingRound({
+    street: "River",
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
+    dealer,
     handState,
   });
 
-  if (outcome.folded) {
+  if (result.folded) {
     return;
   }
 
-  await pause("River betting finished.");
+  await streetPause("River betting finished.");
 
   awardShowdown({
     playerHand,
-    aiHand,
+    opponentHand,
     communityCards,
-    button,
+    dealer,
   });
 }
 
+// ─────────────────────────────────────────────
+// Mode Selection and Game Loop
+// ─────────────────────────────────────────────
+async function chooseMode() {
+  while (true) {
+    clearScreen();
+
+    console.log("══════════════════════════════════════════════════════");
+    console.log("             🎲 CLI TEXAS HOLD'EM POKER");
+    console.log("══════════════════════════════════════════════════════");
+    console.log(" [1] Manual Play    - You select each action");
+    console.log(" [2] AI Watch Mode  - AI plays your cards slowly");
+    console.log("══════════════════════════════════════════════════════");
+
+    const answer = await ask("\nSelect mode (1/2): ");
+
+    if (["1", "m", "manual"].includes(answer)) {
+      game.mode = "manual";
+      return;
+    }
+
+    if (["2", "a", "ai", "watch"].includes(answer)) {
+      game.mode = "ai";
+      return;
+    }
+  }
+}
+
 async function playPoker() {
-  while (playerBank > 0 && aiBank > 0) {
+  while (game.playerBank > 0 && game.opponentBank > 0) {
     await playHand();
 
-    if (playerBank <= 0 || aiBank <= 0) {
+    if (game.playerBank <= 0 || game.opponentBank <= 0) {
       break;
     }
 
-    const answer = await ask("\nPlay another hand? (Y/N) > ");
+    if (isWatchMode()) {
+      console.log(
+        `\nNext hand starts in ${AI_HAND_DELAY / 1000} seconds. ` +
+          "Press Ctrl+C to stop watching."
+      );
 
-    if (!["y", "yes"].includes(answer)) {
-      clearScreen();
-      console.log("🎲 Thanks for playing CLI Texas Hold'em Poker!");
-      rl.close();
-      return;
+      await wait(AI_HAND_DELAY);
+    } else {
+      const answer = await ask("\nPlay another hand? (Y/N): ");
+
+      if (!["y", "yes"].includes(answer)) {
+        clearScreen();
+        console.log("🎲 Thanks for playing CLI Texas Hold'em Poker!");
+        rl.close();
+        return;
+      }
     }
   }
 
   clearScreen();
 
-  if (playerBank <= 0) {
-    console.log("💀 You are out of chips. AI wins the game!");
+  if (game.playerBank <= 0) {
+    console.log(
+      isWatchMode()
+        ? "💀 Your AI is out of chips. Opponent AI wins the game!"
+        : "💀 You are out of chips. Opponent AI wins the game!"
+    );
   } else {
-    console.log("🏆 AI is out of chips. You win the game!");
+    console.log(
+      isWatchMode()
+        ? "🏆 Opponent AI is out of chips. Your AI wins the game!"
+        : "🏆 Opponent AI is out of chips. You win the game!"
+    );
   }
 
   rl.close();
 }
 
-clearScreen();
+async function startGame() {
+  await chooseMode();
 
-console.log("🎲 Welcome to CLI Texas Hold'em Poker!");
-console.log("Each street is redrawn on a clean screen to keep the game readable.");
-console.log("Use: check, bet, call, raise, or fold.");
+  clearScreen();
 
-ask("\nPress Enter to start...").then(() => {
-  playPoker().catch((error) => {
-    clearScreen();
-    console.error("An unexpected error occurred:", error.message);
-    rl.close();
-  });
+  console.log(
+    `🎲 Starting Poker — ${
+      isWatchMode() ? "AI Watch Mode" : "Manual Play"
+    }`
+  );
+
+  if (isWatchMode()) {
+    console.log("Your AI will now play for you.");
+    console.log("The game pauses after decisions so you can watch.");
+    console.log("Press Ctrl+C at any time to stop.");
+
+    await wait(AI_STREET_DELAY);
+  } else {
+    console.log("Use: check, bet, call, raise, or fold.");
+
+    await ask("\nPress Enter to begin...");
+  }
+
+  await playPoker();
+}
+
+// ─────────────────────────────────────────────
+// Start Game
+// ─────────────────────────────────────────────
+startGame().catch((error) => {
+  clearScreen();
+  console.error("An unexpected error occurred:", error.message);
+  rl.close();
 });

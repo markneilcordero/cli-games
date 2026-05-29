@@ -13,9 +13,14 @@ const rl = readline.createInterface({
 // - Dealer stands on all 17s, including soft 17
 // - Insurance costs half the original bet and pays 2:1 profit
 // - Double down is available on the player's first two cards
+// - AI mode automatically bets and plays each hand
 // ─────────────────────────────────────────────
 const STARTING_BALANCE = 500;
 const MIN_BET = 5;
+
+const AI_BET_PERCENT = 0.05;
+const AI_ACTION_DELAY = 4000;
+const AI_AUTO_CONTINUE_DELAY = 4000;
 
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = [
@@ -41,6 +46,7 @@ const session = {
   losses: 0,
   pushes: 0,
   blackjacks: 0,
+  mode: "manual",
 };
 
 // ─────────────────────────────────────────────
@@ -99,6 +105,10 @@ function cardText(card) {
 
 function handText(hand) {
   return hand.map(cardText).join(" ");
+}
+
+function modeText() {
+  return session.mode === "ai" ? "AI AUTO-PLAY" : "MANUAL PLAY";
 }
 
 // ─────────────────────────────────────────────
@@ -167,6 +177,20 @@ function isTenValue(card) {
   return ["10", "J", "Q", "K"].includes(card.rank);
 }
 
+function dealerUpcardValue(round) {
+  const rank = round.dealerHand[0].rank;
+
+  if (rank === "A") {
+    return 11;
+  }
+
+  if (isTenValue(round.dealerHand[0])) {
+    return 10;
+  }
+
+  return Number(rank);
+}
+
 function createRound(originalBet) {
   const round = {
     deck: createShuffledDeck(),
@@ -208,6 +232,7 @@ function renderLobby(message = "Place a bet to start a hand.") {
   console.log(
     ` Balance: ${money(session.balance)}     Hand: ${session.handNumber}`
   );
+  console.log(` Mode: ${modeText()}`);
   console.log(` ${statsLine()}`);
   console.log("──────────────────────────────────────────────────");
   console.log(" Rules: Blackjack pays 3:2 | Dealer stands on 17");
@@ -251,6 +276,7 @@ function renderRound(round, message = round.status) {
       session.balance
     )}`
   );
+  console.log(` Mode: ${modeText()}`);
   console.log(
     ` Wager: ${money(round.wager)}` +
       `${
@@ -288,6 +314,7 @@ function renderGoodbye() {
   console.log("══════════════════════════════════════════════════");
   console.log("                    GAME OVER");
   console.log("══════════════════════════════════════════════════");
+  console.log(` Mode:          ${modeText()}`);
   console.log(` Final Balance: ${money(session.balance)}`);
   console.log(` Net Result:    ${signedMoney(net)}`);
   console.log(` ${statsLine()}`);
@@ -331,12 +358,22 @@ function settleRound(round, outcome, payout, message) {
   renderRound(round);
 }
 
+// ─────────────────────────────────────────────
+// Insurance and Natural Blackjack
+// ─────────────────────────────────────────────
 async function offerInsurance(round) {
   if (round.dealerHand[0].rank !== "A") {
     return;
   }
 
   const insuranceAmount = Number((round.originalBet / 2).toFixed(2));
+
+  if (session.mode === "ai") {
+    round.insuranceMessage = "🤖 AI declined insurance.";
+    renderRound(round, "Dealer shows an Ace. AI evaluates insurance.");
+    await wait(AI_ACTION_DELAY);
+    return;
+  }
 
   if (session.balance < insuranceAmount) {
     round.insuranceMessage =
@@ -471,7 +508,7 @@ async function dealerTurn(round) {
   round.dealerRevealed = true;
 
   renderRound(round, "Dealer reveals the hidden card.");
-  await wait(500);
+  await wait(AI_ACTION_DELAY);
 
   while (handValue(round.dealerHand).total < 17) {
     const card = drawCard(round);
@@ -479,7 +516,7 @@ async function dealerTurn(round) {
     round.dealerHand.push(card);
 
     renderRound(round, `Dealer draws ${cardText(card)}.`);
-    await wait(500);
+    await wait(AI_ACTION_DELAY);
   }
 
   const player = handValue(round.playerHand);
@@ -524,9 +561,227 @@ async function dealerTurn(round) {
 }
 
 // ─────────────────────────────────────────────
-// Player Turn
+// Shared Player Actions
 // ─────────────────────────────────────────────
-async function playerTurn(round) {
+async function hit(round, actor = "You") {
+  const card = drawCard(round);
+
+  round.playerHand.push(card);
+
+  const player = handValue(round.playerHand);
+
+  if (player.bust) {
+    settleRound(
+      round,
+      "loss",
+      0,
+      `💥 ${actor} drew ${cardText(card)} and busted with ${player.total}. ` +
+        `You lose ${money(round.wager)}.`
+    );
+
+    return true;
+  }
+
+  round.status =
+    `${actor} drew ${cardText(card)}. Your total is ${player.total}.`;
+
+  return false;
+}
+
+async function doubleDown(round, actor = "You") {
+  session.balance = Number(
+    (session.balance - round.originalBet).toFixed(2)
+  );
+
+  round.wager += round.originalBet;
+
+  const card = drawCard(round);
+
+  round.playerHand.push(card);
+
+  const player = handValue(round.playerHand);
+
+  if (player.bust) {
+    settleRound(
+      round,
+      "loss",
+      0,
+      `💥 ${actor} doubled down, drew ${cardText(card)}, ` +
+        `and busted with ${player.total}. ` +
+        `You lose ${money(round.wager)}.`
+    );
+
+    return;
+  }
+
+  round.status =
+    `${actor} doubled down and drew ${cardText(card)}. Dealer now plays.`;
+
+  renderRound(round);
+  await wait(AI_ACTION_DELAY);
+
+  await dealerTurn(round);
+}
+
+// ─────────────────────────────────────────────
+// AI Player Logic
+//
+// Las Vegas Basic Strategy for single deck,
+// dealer stands on all 17s. Mathematically
+// optimal play without split support.
+// ─────────────────────────────────────────────
+function chooseAIAction(round, canDouble) {
+  const player = handValue(round.playerHand);
+  const dealer = dealerUpcardValue(round);
+  const total = player.total;
+
+  // Soft hands (Ace counted as 11)
+  if (player.soft) {
+    if (total >= 19) {
+      // Soft 20, Soft 21: Always stand
+      return "stand";
+    }
+
+    if (total === 18) {
+      // Soft 18 (A7): Stand vs 2-8, Double vs 3-6, Hit vs 9+
+      if (canDouble && dealer >= 3 && dealer <= 6) {
+        return "double";
+      }
+      return dealer <= 8 ? "stand" : "hit";
+    }
+
+    if (total === 17) {
+      // Soft 17 (A6): Double vs 3-6, Hit vs all others
+      return canDouble && dealer >= 3 && dealer <= 6
+        ? "double"
+        : "hit";
+    }
+
+    if (total === 16) {
+      // Soft 16 (A5): Double vs 4-6, Hit vs all others
+      return canDouble && dealer >= 4 && dealer <= 6
+        ? "double"
+        : "hit";
+    }
+
+    if (total === 15) {
+      // Soft 15 (A4): Double vs 4-6, Hit vs all others
+      return canDouble && dealer >= 4 && dealer <= 6
+        ? "double"
+        : "hit";
+    }
+
+    if (total === 14) {
+      // Soft 14 (A3): Double vs 5-6, Hit vs all others
+      return canDouble && dealer >= 5 && dealer <= 6
+        ? "double"
+        : "hit";
+    }
+
+    // Soft 13 and below: Double vs 5-6, Hit vs all others
+    return canDouble && dealer >= 5 && dealer <= 6
+      ? "double"
+      : "hit";
+  }
+
+  // Hard hands (no Ace or Ace counted as 1)
+  if (total >= 17) {
+    // 17 or higher: Always stand
+    return "stand";
+  }
+
+  if (total === 16) {
+    // 16: Stand vs 2-6, Hit vs 7-A
+    return dealer >= 2 && dealer <= 6 ? "stand" : "hit";
+  }
+
+  if (total === 15) {
+    // 15: Stand vs 2-6, Hit vs 7-A
+    return dealer >= 2 && dealer <= 6 ? "stand" : "hit";
+  }
+
+  if (total === 14) {
+    // 14: Stand vs 2-6, Hit vs 7-A
+    return dealer >= 2 && dealer <= 6 ? "stand" : "hit";
+  }
+
+  if (total === 13) {
+    // 13: Stand vs 2-6, Hit vs 7-A
+    return dealer >= 2 && dealer <= 6 ? "stand" : "hit";
+  }
+
+  if (total === 12) {
+    // 12: Stand vs 4-6, Hit vs 2-3 and 7-A
+    return dealer >= 4 && dealer <= 6 ? "stand" : "hit";
+  }
+
+  if (total === 11) {
+    // 11: Double vs 2-10, Hit vs Ace
+    return canDouble && dealer !== 11 ? "double" : "hit";
+  }
+
+  if (total === 10) {
+    // 10: Double vs 2-9, Hit vs 10 or Ace
+    return canDouble && dealer >= 2 && dealer <= 9
+      ? "double"
+      : "hit";
+  }
+
+  if (total === 9) {
+    // 9: Double vs 3-6, Hit vs all others
+    return canDouble && dealer >= 3 && dealer <= 6
+      ? "double"
+      : "hit";
+  }
+
+  // 8 or less: Always hit
+  return "hit";
+}
+
+async function aiTurn(round) {
+  let firstDecision = true;
+
+  while (!round.settled) {
+    const canDouble =
+      firstDecision && session.balance >= round.originalBet;
+
+    const action = chooseAIAction(round, canDouble);
+
+    const actionLabel =
+      action === "double" ? "DOUBLE DOWN" : action.toUpperCase();
+
+    renderRound(round, `🤖 AI decision: ${actionLabel}.`);
+    await wait(AI_ACTION_DELAY);
+
+    if (action === "hit") {
+      const busted = await hit(round, "AI");
+
+      if (busted) {
+        return;
+      }
+
+      firstDecision = false;
+
+      renderRound(round, round.status);
+      await wait(AI_ACTION_DELAY);
+
+      continue;
+    }
+
+    if (action === "double") {
+      await doubleDown(round, "AI");
+      return;
+    }
+
+    await dealerTurn(round);
+    return;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Manual Player Turn
+// ─────────────────────────────────────────────
+async function manualPlayerTurn(round) {
   let firstDecision = true;
 
   while (!round.settled) {
@@ -544,28 +799,13 @@ async function playerTurn(round) {
     ).toLowerCase();
 
     if (["h", "hit"].includes(choice)) {
-      const card = drawCard(round);
+      const busted = await hit(round);
 
-      round.playerHand.push(card);
-      firstDecision = false;
-
-      const player = handValue(round.playerHand);
-
-      if (player.bust) {
-        settleRound(
-          round,
-          "loss",
-          0,
-          `💥 You drew ${cardText(card)} and busted with ${player.total}. ` +
-            `You lose ${money(round.wager)}.`
-        );
-
+      if (busted) {
         return;
       }
 
-      round.status =
-        `You drew ${cardText(card)}. Your total is ${player.total}.`;
-
+      firstDecision = false;
       continue;
     }
 
@@ -591,36 +831,7 @@ async function playerTurn(round) {
         continue;
       }
 
-      session.balance = Number(
-        (session.balance - round.originalBet).toFixed(2)
-      );
-
-      round.wager += round.originalBet;
-
-      const card = drawCard(round);
-
-      round.playerHand.push(card);
-
-      const player = handValue(round.playerHand);
-
-      if (player.bust) {
-        settleRound(
-          round,
-          "loss",
-          0,
-          `💥 You doubled down, drew ${cardText(card)}, ` +
-            `and busted with ${player.total}. ` +
-            `You lose ${money(round.wager)}.`
-        );
-
-        return;
-      }
-
-      round.status =
-        `You doubled down and drew ${cardText(card)}. Dealer now plays.`;
-
-      await dealerTurn(round);
-
+      await doubleDown(round);
       return;
     }
 
@@ -643,7 +854,6 @@ async function playerTurn(round) {
       }
 
       round.status = "Game continues. Choose your action.";
-
       continue;
     }
 
@@ -651,10 +861,68 @@ async function playerTurn(round) {
   }
 }
 
+async function playerTurn(round) {
+  if (session.mode === "ai") {
+    await aiTurn(round);
+    return;
+  }
+
+  await manualPlayerTurn(round);
+}
+
 // ─────────────────────────────────────────────
-// Game Flow
+// Mode and Betting
 // ─────────────────────────────────────────────
+async function chooseMode() {
+  while (true) {
+    renderLobby(
+      "Choose a mode: [1] Manual Play  [2] AI Auto-Play"
+    );
+
+    const input = (
+      await ask("\nSelect mode (1/2 or EXIT): ")
+    ).toLowerCase();
+
+    if (["1", "m", "manual"].includes(input)) {
+      session.mode = "manual";
+      return true;
+    }
+
+    if (["2", "a", "ai", "auto"].includes(input)) {
+      session.mode = "ai";
+      return true;
+    }
+
+    if (isExitInput(input)) {
+      return false;
+    }
+  }
+}
+
+function getAIBet() {
+  const percentageBet = Math.floor(
+    session.balance * AI_BET_PERCENT
+  );
+
+  const wager = Math.max(MIN_BET, percentageBet);
+
+  return Number(Math.min(session.balance, wager).toFixed(2));
+}
+
 async function getBet() {
+  if (session.mode === "ai") {
+    const bet = getAIBet();
+
+    renderLobby(
+      `🤖 AI places a ${money(bet)} wager ` +
+        `(${Math.round(AI_BET_PERCENT * 100)}% bankroll strategy).`
+    );
+
+    await wait(AI_ACTION_DELAY);
+
+    return bet;
+  }
+
   let message = `Minimum bet is ${money(MIN_BET)}.`;
 
   while (true) {
@@ -684,6 +952,9 @@ async function getBet() {
   }
 }
 
+// ─────────────────────────────────────────────
+// Game Flow
+// ─────────────────────────────────────────────
 async function playHand(bet) {
   session.balance = Number(
     (session.balance - bet).toFixed(2)
@@ -703,6 +974,15 @@ async function playHand(bet) {
 }
 
 async function askPlayAgain() {
+  if (session.mode === "ai") {
+    renderLobby("🤖 AI is preparing the next hand...");
+    await wait(AI_AUTO_CONTINUE_DELAY);
+
+    session.handNumber += 1;
+
+    return true;
+  }
+
   while (true) {
     const input = (
       await ask("\nPlay another hand? (Y/N): ")
@@ -722,6 +1002,15 @@ async function askPlayAgain() {
 }
 
 async function startGame() {
+  const modeSelected = await chooseMode();
+
+  if (!modeSelected) {
+    renderGoodbye();
+    rl.close();
+
+    return;
+  }
+
   while (session.balance >= MIN_BET) {
     const bet = await getBet();
 
@@ -745,7 +1034,11 @@ async function startGame() {
         )} minimum bet.`
       );
 
-      await ask("\nPress Enter to finish...");
+      if (session.mode === "manual") {
+        await ask("\nPress Enter to finish...");
+      } else {
+        await wait(AI_AUTO_CONTINUE_DELAY);
+      }
 
       break;
     }
