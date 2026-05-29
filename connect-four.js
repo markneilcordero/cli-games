@@ -1,176 +1,404 @@
-const readline = require('readline');
+const readline = require("readline");
+const { randomInt } = require("crypto");
 
 const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
+  input: process.stdin,
+  output: process.stdout,
 });
 
-// Game Constants
+// ─────────────────────────────────────────────
+// Game Settings
+// ─────────────────────────────────────────────
 const ROWS = 6;
 const COLUMNS = 7;
-const EMPTY = '⚪';
-const PLAYER_ONE = '🔴';
-const PLAYER_TWO = '🟡'; // AI
+const EMPTY = "⚪";
+const PLAYER = "🔴";
+const AI = "🟡";
+const AI_THINK_DELAY = 700;
 
-// Game Variables
 let board = [];
-let currentPlayer = PLAYER_ONE;
+let playerScore = 0;
+let aiScore = 0;
+let draws = 0;
+let gameNumber = 1;
 
-// Initialize the board
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function ask(question) {
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => resolve(answer.trim()));
+  });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function clearScreen() {
+  process.stdout.write("\x1Bc");
+}
+
 function initializeBoard() {
-    board = Array.from({ length: ROWS }, () => Array(COLUMNS).fill(EMPTY));
+  board = Array.from({ length: ROWS }, () => Array(COLUMNS).fill(EMPTY));
 }
 
-// Display the board
-function displayBoard() {
-    console.clear();
-    console.log('\n🎮 CONNECT FOUR 🎮\n');
-    console.log(' 1  2  3  4  5  6  7 ');
-    console.log('-'.repeat(23));
-    for (let row of board) {
-        console.log('| ' + row.join(' ') + ' |');
-    }
-    console.log('-'.repeat(23) + '\n');
+function renderBoard(status = "") {
+  clearScreen();
+
+  console.log("══════════════════════════════════════");
+  console.log("           🎮 CONNECT FOUR 🎮");
+  console.log("══════════════════════════════════════");
+  console.log(
+    ` Game ${gameNumber}     You ${playerScore} - ${aiScore} AI     Draws ${draws}`
+  );
+  console.log(" You: 🔴                     AI: 🟡");
+  console.log("──────────────────────────────────────");
+  console.log("   1   2   3   4   5   6   7");
+
+  for (const row of board) {
+    console.log(`| ${row.join(" ")} |`);
+  }
+
+  console.log("──────────────────────────────────────");
+
+  if (status) {
+    console.log(` ${status}`);
+  }
 }
 
-// Check if a move is valid
-function isValidMove(col) {
-    return board[0][col] === EMPTY;
+function isValidColumn(column) {
+  return (
+    Number.isInteger(column) &&
+    column >= 0 &&
+    column < COLUMNS &&
+    board[0][column] === EMPTY
+  );
 }
 
-// Drop the piece into the board
-function dropPiece(col) {
-    for (let row = ROWS - 1; row >= 0; row--) {
-        if (board[row][col] === EMPTY) {
-            board[row][col] = currentPlayer;
-            return row;
-        }
-    }
+function getValidColumns() {
+  return Array.from({ length: COLUMNS }, (_, column) => column).filter(
+    isValidColumn
+  );
+}
+
+function dropPiece(column, piece) {
+  if (!isValidColumn(column)) {
     return -1;
-}
+  }
 
-// Check for a win condition
-function checkWin(row, col) {
-    return (
-        checkDirection(row, col, 1, 0) || // Vertical
-        checkDirection(row, col, 0, 1) || // Horizontal
-        checkDirection(row, col, 1, 1) || // Diagonal /
-        checkDirection(row, col, 1, -1)   // Diagonal \
-    );
-}
-
-// Helper function to check 4-in-a-row in a direction
-function checkDirection(row, col, rowDir, colDir) {
-    let count = 1;
-
-    for (let dir of [-1, 1]) {
-        let r = row + rowDir * dir;
-        let c = col + colDir * dir;
-        while (r >= 0 && r < ROWS && c >= 0 && c < COLUMNS && board[r][c] === currentPlayer) {
-            count++;
-            if (count === 4) return true;
-            r += rowDir * dir;
-            c += colDir * dir;
-        }
+  for (let row = ROWS - 1; row >= 0; row -= 1) {
+    if (board[row][column] === EMPTY) {
+      board[row][column] = piece;
+      return row;
     }
-    return false;
+  }
+
+  return -1;
 }
 
-// Check if the board is full (Draw condition)
+function removePiece(row, column) {
+  board[row][column] = EMPTY;
+}
+
+function countDirection(row, column, rowStep, columnStep, piece) {
+  let count = 0;
+  let currentRow = row + rowStep;
+  let currentColumn = column + columnStep;
+
+  while (
+    currentRow >= 0 &&
+    currentRow < ROWS &&
+    currentColumn >= 0 &&
+    currentColumn < COLUMNS &&
+    board[currentRow][currentColumn] === piece
+  ) {
+    count += 1;
+    currentRow += rowStep;
+    currentColumn += columnStep;
+  }
+
+  return count;
+}
+
+function checkWin(row, column, piece) {
+  const directions = [
+    [1, 0], // Vertical
+    [0, 1], // Horizontal
+    [1, 1], // Diagonal \
+    [1, -1], // Diagonal /
+  ];
+
+  return directions.some(([rowStep, columnStep]) => {
+    const connected =
+      1 +
+      countDirection(row, column, rowStep, columnStep, piece) +
+      countDirection(row, column, -rowStep, -columnStep, piece);
+
+    return connected >= 4;
+  });
+}
+
 function isBoardFull() {
-    return board[0].every(cell => cell !== EMPTY);
+  return getValidColumns().length === 0;
 }
 
-// AI Move (Simple AI: Chooses a random valid column)
-function aiMove() {
-    let availableCols = [];
-    for (let col = 0; col < COLUMNS; col++) {
-        if (isValidMove(col)) availableCols.push(col);
+function parsePlayerColumn(input) {
+  if (!/^[1-7]$/.test(input)) {
+    return null;
+  }
+
+  return Number(input) - 1;
+}
+
+// ─────────────────────────────────────────────
+// AI Logic
+// ─────────────────────────────────────────────
+function findWinningColumn(piece) {
+  for (const column of getValidColumns()) {
+    const row = dropPiece(column, piece);
+    const wins = checkWin(row, column, piece);
+
+    removePiece(row, column);
+
+    if (wins) {
+      return column;
+    }
+  }
+
+  return null;
+}
+
+function connectionScore(row, column, piece) {
+  const directions = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1],
+  ];
+
+  return directions.reduce((score, [rowStep, columnStep]) => {
+    const connected =
+      1 +
+      countDirection(row, column, rowStep, columnStep, piece) +
+      countDirection(row, column, -rowStep, -columnStep, piece);
+
+    return score + connected * connected;
+  }, 0);
+}
+
+function scoreAiColumn(column) {
+  const row = dropPiece(column, AI);
+
+  // Center columns are usually stronger in Connect Four.
+  let score = 12 - Math.abs(3 - column) * 3;
+
+  score += connectionScore(row, column, AI);
+
+  // Avoid moves that immediately allow the player to win.
+  if (findWinningColumn(PLAYER) !== null) {
+    score -= 1000;
+  }
+
+  removePiece(row, column);
+
+  return score;
+}
+
+function chooseAiColumn() {
+  const winningColumn = findWinningColumn(AI);
+
+  if (winningColumn !== null) {
+    return {
+      column: winningColumn,
+      reason: "AI finds a winning move.",
+    };
+  }
+
+  const blockingColumn = findWinningColumn(PLAYER);
+
+  if (blockingColumn !== null) {
+    return {
+      column: blockingColumn,
+      reason: "AI blocks your winning move.",
+    };
+  }
+
+  const scoredColumns = getValidColumns().map((column) => ({
+    column,
+    score: scoreAiColumn(column),
+  }));
+
+  const bestScore = Math.max(...scoredColumns.map((choice) => choice.score));
+
+  const bestColumns = scoredColumns
+    .filter((choice) => choice.score === bestScore)
+    .map((choice) => choice.column);
+
+  const chosenColumn = bestColumns[randomInt(0, bestColumns.length)];
+
+  return {
+    column: chosenColumn,
+    reason:
+      chosenColumn === 3
+        ? "AI prefers the center column."
+        : "AI chooses a strategic position.",
+  };
+}
+
+// ─────────────────────────────────────────────
+// Turns and Game Flow
+// ─────────────────────────────────────────────
+async function playerTurn(status = "Choose a column from 1 to 7.") {
+  while (true) {
+    renderBoard(status);
+
+    const input = (
+      await ask("\nChoose a column (1-7) or E to exit: ")
+    ).toUpperCase();
+
+    if (input === "E" || input === "EXIT") {
+      return { exit: true };
     }
 
-    if (availableCols.length === 0) return; // No valid moves
+    const column = parsePlayerColumn(input);
 
-    let chosenCol = availableCols[Math.floor(Math.random() * availableCols.length)];
-    let row = dropPiece(chosenCol);
+    if (column === null) {
+      status = "⚠ Invalid input. Enter one number from 1 to 7.";
+      continue;
+    }
 
-    console.log(`🤖 AI chooses column ${chosenCol + 1}`);
+    if (!isValidColumn(column)) {
+      status = `⚠ Column ${column + 1} is full. Choose another column.`;
+      continue;
+    }
 
-    if (checkWin(row, chosenCol)) {
-        displayBoard();
-        console.log("🤖 AI WINS! 🎉");
-        return askReplay();
+    const row = dropPiece(column, PLAYER);
+
+    return {
+      exit: false,
+      row,
+      column,
+      status: `You dropped 🔴 in column ${column + 1}.`,
+    };
+  }
+}
+
+async function aiTurn() {
+  renderBoard("🤖 AI is thinking...");
+  await wait(AI_THINK_DELAY);
+
+  const { column, reason } = chooseAiColumn();
+  const row = dropPiece(column, AI);
+
+  return {
+    row,
+    column,
+    status: `🤖 AI dropped 🟡 in column ${column + 1}. ${reason}`,
+  };
+}
+
+async function playOneGame() {
+  initializeBoard();
+
+  let status = "You start. Choose a column from 1 to 7.";
+
+  while (true) {
+    const playerMove = await playerTurn(status);
+
+    if (playerMove.exit) {
+      return "exit";
+    }
+
+    if (checkWin(playerMove.row, playerMove.column, PLAYER)) {
+      playerScore += 1;
+
+      renderBoard("🎉 You connect four and win!");
+
+      return "finished";
     }
 
     if (isBoardFull()) {
-        displayBoard();
-        console.log("🤝 It's a DRAW! No more moves available.");
-        return askReplay();
+      draws += 1;
+
+      renderBoard("🤝 The board is full. It is a draw!");
+
+      return "finished";
     }
 
-    currentPlayer = PLAYER_ONE; // Switch back to human player
-    playerMove();
+    const aiMove = await aiTurn();
+
+    if (checkWin(aiMove.row, aiMove.column, AI)) {
+      aiScore += 1;
+
+      renderBoard(`${aiMove.status}\n\n 🤖 AI connects four and wins!`);
+
+      return "finished";
+    }
+
+    if (isBoardFull()) {
+      draws += 1;
+
+      renderBoard(`${aiMove.status}\n\n 🤝 The board is full. It is a draw!`);
+
+      return "finished";
+    }
+
+    status = aiMove.status;
+  }
 }
 
-// Handle Player Move
-function playerMove() {
-    displayBoard();
-    rl.question(`Player ${currentPlayer} - Choose a column (1-7) or type 'E' to exit: `, (input) => {
-        if (input.toUpperCase() === 'E') {
-            console.log("🚪 Exiting game...");
-            rl.close();
-            return;
-        }
+async function askReplay() {
+  while (true) {
+    const answer = (await ask("\nPlay again? (Y/N): ")).toUpperCase();
 
-        const col = parseInt(input) - 1;
+    if (answer === "Y" || answer === "YES") {
+      gameNumber += 1;
+      return true;
+    }
 
-        if (isNaN(col) || col < 0 || col >= COLUMNS) {
-            console.log("⚠️ Invalid column! Please choose between 1-7.");
-            return playerMove();
-        }
+    if (answer === "N" || answer === "NO") {
+      return false;
+    }
 
-        if (!isValidMove(col)) {
-            console.log("⚠️ Column full! Choose another.");
-            return playerMove();
-        }
-
-        const row = dropPiece(col);
-
-        if (checkWin(row, col)) {
-            displayBoard();
-            console.log(`🎉 Player ${currentPlayer} WINS! 🏆`);
-            return askReplay();
-        }
-
-        if (isBoardFull()) {
-            displayBoard();
-            console.log("🤝 It's a DRAW! No more moves available.");
-            return askReplay();
-        }
-
-        // Switch to AI's turn
-        currentPlayer = PLAYER_TWO;
-        setTimeout(aiMove, 1000); // AI takes a second to "think"
-    });
+    console.log("Please enter Y or N.");
+  }
 }
 
-// Ask to replay or exit
-function askReplay() {
-    rl.question("🔄 Play again? (Y/N): ", (answer) => {
-        if (answer.toUpperCase() === 'Y') {
-            startGame();
-        } else {
-            console.log("Thanks for playing! 🎮");
-            rl.close();
-        }
-    });
+function showExitScreen() {
+  clearScreen();
+
+  console.log("══════════════════════════════════════");
+  console.log("           🎮 GAME OVER 🎮");
+  console.log("══════════════════════════════════════");
+  console.log(` Final score: You ${playerScore} - ${aiScore} AI`);
+  console.log(` Draws: ${draws}`);
+  console.log(" Thanks for playing Connect Four!");
+  console.log("══════════════════════════════════════");
 }
 
-// Start Game Function
-function startGame() {
-    initializeBoard();
-    currentPlayer = PLAYER_ONE;
-    playerMove();
+async function startGame() {
+  while (true) {
+    const result = await playOneGame();
+
+    if (result === "exit") {
+      showExitScreen();
+      rl.close();
+      return;
+    }
+
+    const replay = await askReplay();
+
+    if (!replay) {
+      showExitScreen();
+      rl.close();
+      return;
+    }
+  }
 }
 
-// Start the game on execution
-startGame();
+startGame().catch((error) => {
+  clearScreen();
+  console.error("An unexpected error occurred:", error.message);
+  rl.close();
+});
